@@ -390,13 +390,13 @@ def _apply_output_formatting(ws):
 def _freezpak_read_file(f, sheet_name):
     """Try named sheet first; fall back to first sheet."""
     try:
-        df = pd.read_excel(f, sheet_name=sheet_name)
+        df = pd.read_excel(f, sheet_name=sheet_name, dtype=str)
         f.seek(0)
         return df, ""
     except Exception:
         try:
             f.seek(0)
-            df = pd.read_excel(f, sheet_name=0)
+            df = pd.read_excel(f, sheet_name=0, dtype=str)
             f.seek(0)
             return df, ""
         except Exception as exc:
@@ -616,7 +616,7 @@ def _write_single_sheet_excel(df, sheet_name="Aggregated"):
 def _halls_read_logistics(f):
     """Read a Halls LOGISTICS data file: drop Unnamed columns, blank rows, and last (totals) row."""
     try:
-        df = pd.read_excel(f, sheet_name=0)
+        df = pd.read_excel(f, sheet_name=0, dtype=str)
         f.seek(0)
         df = df.loc[:, ~df.columns.str.contains('^Unnamed', na=False)]
         df = df.dropna(how='all').reset_index(drop=True)   # remove blank rows
@@ -731,7 +731,7 @@ def _halls_trucking_fsc_proc(files):
         except Exception:
             try:
                 f.seek(0)
-                df = pd.read_excel(f, sheet_name=0)
+                df = pd.read_excel(f, sheet_name=0, dtype=str)
                 f.seek(0)
                 dfs_raw.append(df)
             except Exception as exc:
@@ -848,8 +848,9 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
     if uploaded_list:
         uploaded = uploaded_list  # always a list from here
         try:
-            raw_df = (pd.read_csv(uploaded[0]) if uploaded[0].name.endswith(".csv")
-                      else pd.read_excel(uploaded[0], sheet_name=0))
+            # Read only 100 rows for preview to keep memory low
+            raw_df = (pd.read_csv(uploaded[0], nrows=100) if uploaded[0].name.endswith(".csv")
+                      else pd.read_excel(uploaded[0], sheet_name=0, nrows=100))
             uploaded[0].seek(0)
         except Exception as exc:
             st.markdown(f'<div class="warning-box">Could not preview file: {exc}</div>', unsafe_allow_html=True)
@@ -1029,8 +1030,8 @@ def render_aggregator_tab():
                     first_cols = [canon[_normalize_col(c)] for c in dfs[0].columns if _normalize_col(c) in canon]
                     extra_cols = [c for c in merged.columns if c not in first_cols]
                     merged     = merged[first_cols + extra_cols]
-                    st.session_state["agg_output"]    = (_df_to_formatted_excel(merged, "Aggregated"), "Aggregated_Output.xlsx", None)
-                    st.session_state["agg_merged_df"] = merged
+                    st.session_state["agg_output"] = (_df_to_formatted_excel(merged, "Aggregated"), "Aggregated_Output.xlsx", None)
+                    # Don't cache merged df — regenerate preview from bytes to save memory
                 except Exception as exc:
                     st.session_state["agg_output"] = (None, None, str(exc))
 
@@ -1038,10 +1039,16 @@ def render_aggregator_tab():
         if out_err:
             st.markdown(f'<div class="error-box">{out_err}</div>', unsafe_allow_html=True)
         else:
-            merged = st.session_state.get("agg_merged_df", pd.DataFrame())
-            st.markdown(f'<div class="success-box">Aggregation complete &mdash; <b>{len(merged):,} rows</b> across <b>{len(merged.columns)} columns</b></div>', unsafe_allow_html=True)
+            # Read preview from output bytes — single pass
+            try:
+                preview_df = pd.read_excel(io.BytesIO(out_bytes), sheet_name=0, nrows=20)
+                full_idx   = pd.read_excel(io.BytesIO(out_bytes), sheet_name=0, usecols=[0])
+                row_count  = len(full_idx); col_count = len(preview_df.columns); del full_idx
+            except Exception:
+                preview_df, row_count, col_count = pd.DataFrame(), 0, 0
+            st.markdown(f'<div class="success-box">Aggregation complete &mdash; <b>{row_count:,} rows</b> across <b>{col_count} columns</b></div>', unsafe_allow_html=True)
             with st.expander("\U0001f4cb Merged Preview (first 20 rows)", expanded=True):
-                st.dataframe(merged.head(20), use_container_width=True, height=300)
+                st.dataframe(preview_df, use_container_width=True, height=300)
             col_a, _, _ = st.columns([1, 1, 2])
             with col_a:
                 st.download_button(label="Download Aggregated File", data=out_bytes, file_name=out_name,
@@ -1168,8 +1175,7 @@ def render_subtotal_tab():
                             ews.column_dimensions[get_column_letter(ci)].width = unif
                         ews.auto_filter.ref = f"A1:{get_column_letter(ews.max_column)}{ews.max_row}"
                         ewb.save(buf)
-                        st.session_state["sub_output"]     = (buf.getvalue(), "Subtotal_Summary.xlsx", None)
-                        st.session_state["sub_display_df"] = display_df
+                        st.session_state["sub_output"] = (buf.getvalue(), "Subtotal_Summary.xlsx", None)
                 except Exception as exc:
                     st.session_state["sub_output"] = (None, None, str(exc))
 
@@ -1177,8 +1183,11 @@ def render_subtotal_tab():
         if out_err:
             st.markdown(f'<div class="error-box">{out_err}</div>', unsafe_allow_html=True)
         else:
-            display_df = st.session_state.get("sub_display_df", pd.DataFrame())
-            num_cols   = len(display_df.columns) - 1
+            try:
+                display_df = pd.read_excel(io.BytesIO(out_bytes), sheet_name=0, nrows=50)
+            except Exception:
+                display_df = pd.DataFrame()
+            num_cols = max(len(display_df.columns) - 1, 0)
             st.markdown(f'<div class="success-box">Subtotals calculated &mdash; <b>{len(dfs)} files</b>, <b>{num_cols} numeric column(s)</b></div>', unsafe_allow_html=True)
 
             def _style_grand(row):
