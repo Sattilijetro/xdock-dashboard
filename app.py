@@ -614,13 +614,14 @@ def _write_single_sheet_excel(df, sheet_name="Aggregated"):
 
 
 def _halls_read_logistics(f):
-    """Read a Halls LOGISTICS data file: drop Unnamed columns and last (totals) row."""
+    """Read a Halls LOGISTICS data file: drop Unnamed columns, blank rows, and last (totals) row."""
     try:
         df = pd.read_excel(f, sheet_name=0)
         f.seek(0)
         df = df.loc[:, ~df.columns.str.contains('^Unnamed', na=False)]
+        df = df.dropna(how='all').reset_index(drop=True)   # remove blank rows
         if len(df) > 0:
-            df = df.iloc[:-1]
+            df = df.iloc[:-1]                               # remove last totals row
         return df, ""
     except Exception as exc:
         return None, str(exc)
