@@ -80,21 +80,21 @@ XDOCKS = {
 INVOICE_TYPES = {
     "halls": [
         {"name": "IBT",            "key": "halls_ibt",          "placeholder": True},
-        {"name": "Trucking & FSC", "key": "halls_trucking_fsc",  "placeholder": True},
+        {"name": "Trucking & FSC", "key": "halls_trucking_fsc",  "placeholder": False},
         {
             "name": "Warehousing", "key": "halls_warehousing", "placeholder": False,
             "sub_types": [
-                {"name": "Ancillary",        "key": "halls_warehousing_ancillary",      "placeholder": True},
-                {"name": "Inbound",          "key": "halls_warehousing_inbound",        "placeholder": True},
-                {"name": "Renewal",          "key": "halls_warehousing_renewal",        "placeholder": True},
-                {"name": "Sort & Selection", "key": "halls_warehousing_sort_selection", "placeholder": True},
+                {"name": "Ancillary",        "key": "halls_warehousing_ancillary",      "placeholder": False},
+                {"name": "Inbound",          "key": "halls_warehousing_inbound",        "placeholder": False},
+                {"name": "Renewal",          "key": "halls_warehousing_renewal",        "placeholder": False},
+                {"name": "Sort & Selection", "key": "halls_warehousing_sort_selection", "placeholder": False},
             ],
         },
     ],
     "freezpak": [
-        {"name": "Ancillary",           "key": "freezpak_ancillary",         "placeholder": True},
-        {"name": "Inbound",             "key": "freezpak_inbound",           "placeholder": True},
-        {"name": "Recurring / Storage", "key": "freezpak_recurring_storage", "placeholder": True},
+        {"name": "Ancillary",           "key": "freezpak_ancillary",         "placeholder": False},
+        {"name": "Inbound",             "key": "freezpak_inbound",           "placeholder": False},
+        {"name": "Recurring / Storage", "key": "freezpak_recurring_storage", "placeholder": False},
         {"name": "XDock",               "key": "freezpak_xdock",             "placeholder": False},
     ],
     "exp": [
@@ -109,8 +109,14 @@ INVOICE_TYPES = {
     ],
 }
 
-VALIDATED_INVOICE_KEYS = {"freezpak_xdock", "exp_inout_billing"}
-EFH_INVOICE_KEYS       = {"efh_cga", "efh_haines", "efh_streets", "efh_stults"}
+VALIDATED_INVOICE_KEYS = {"exp_inout_billing"}
+EFH_INVOICE_KEYS           = {"efh_cga", "efh_haines", "efh_streets", "efh_stults"}
+FREEZPAK_AGGREGATE_KEYS    = {"freezpak_ancillary", "freezpak_inbound", "freezpak_recurring_storage", "freezpak_xdock"}
+HALLS_AGGREGATE_KEYS       = {
+    "halls_trucking_fsc",
+    "halls_warehousing_ancillary", "halls_warehousing_inbound",
+    "halls_warehousing_renewal",   "halls_warehousing_sort_selection",
+}
 
 
 # =============================================================================
@@ -170,6 +176,21 @@ def _read_first_sheet(uploaded_file):
         return df, ""
     except Exception as exc:
         return None, str(exc)
+
+def _read_all_sheets(uploaded_file):
+    """Read every sheet from an Excel file (or the single sheet of a CSV).
+    Returns (list_of_(sheet_name, df), error_string).
+    """
+    try:
+        if uploaded_file.name.lower().endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+            uploaded_file.seek(0)
+            return [("Sheet1", df)], ""
+        sheets = pd.read_excel(uploaded_file, sheet_name=None, dtype=str)
+        uploaded_file.seek(0)
+        return list(sheets.items()), ""
+    except Exception as exc:
+        return [], str(exc)
 
 def _build_canonical_columns(dfs):
     canon = {}
@@ -341,11 +362,444 @@ def process_generic(uploaded_file, xdock_label: str) -> tuple:
     return to_excel_bytes(df), f"{stem} - AP.xlsx", None
 
 
-def route_invoice(uploaded_file, xdock_key: str, invoice_type_key: str) -> tuple:
+
+# =============================================================================
+# FREEZPAK AGGREGATE PROCESSORS
+# =============================================================================
+
+def _apply_output_formatting(ws):
+    """Bold header, center all, equal column width, auto-filter."""
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.utils import get_column_letter
+    last_row = ws.max_row
+    last_col = ws.max_column
+    col_widths = []
+    for ci in range(1, last_col + 1):
+        mx = max((len(str(ws.cell(row=r, column=ci).value or "")) for r in range(1, last_row + 1)), default=8)
+        col_widths.append(mx)
+    uniform = max(min(max(col_widths, default=10) + 2, 28), 10)
+    for ci in range(1, last_col + 1):
+        ws.column_dimensions[get_column_letter(ci)].width = uniform
+        for ri in range(1, last_row + 1):
+            cell = ws.cell(row=ri, column=ci)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.font = Font(bold=True) if ri == 1 else Font(bold=False)
+    ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}{last_row}"
+
+
+def _freezpak_read_file(f, sheet_name):
+    """Try named sheet first; fall back to first sheet."""
+    try:
+        df = pd.read_excel(f, sheet_name=sheet_name)
+        f.seek(0)
+        return df, ""
+    except Exception:
+        try:
+            f.seek(0)
+            df = pd.read_excel(f, sheet_name=0)
+            f.seek(0)
+            return df, ""
+        except Exception as exc:
+            return None, str(exc)
+
+
+def _write_two_sheet_excel(df_raw, df_clean, sheet_raw="raw", sheet_clean="withoutSubtotals"):
+    """Write two DataFrames to separate sheets with formatting."""
+    buf = io.BytesIO()
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = sheet_raw
+    for ci, col in enumerate(df_raw.columns, 1):
+        ws1.cell(row=1, column=ci, value=str(col))
+    for ri, row in enumerate(df_raw.itertuples(index=False), 2):
+        for ci, val in enumerate(row, 1):
+            ws1.cell(row=ri, column=ci, value=val)
+    _apply_output_formatting(ws1)
+
+    ws2 = wb.create_sheet(title=sheet_clean)
+    for ci, col in enumerate(df_clean.columns, 1):
+        ws2.cell(row=1, column=ci, value=str(col))
+    for ri, row in enumerate(df_clean.itertuples(index=False), 2):
+        for ci, val in enumerate(row, 1):
+            ws2.cell(row=ri, column=ci, value=val)
+    _apply_output_formatting(ws2)
+
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def process_freezpak_aggregate(uploaded_files, invoice_type_key: str) -> tuple:
+    """
+    Dispatcher for all three Freezpak aggregate types.
+    Each handler returns (df_raw, df_clean, error_msg).
+    """
+    handlers = {
+        "freezpak_ancillary":         _fpk_ancillary,
+        "freezpak_inbound":           _fpk_inbound,
+        "freezpak_recurring_storage": _fpk_storage,
+        "freezpak_xdock":             _fpk_xdock,
+    }
+    handler = handlers.get(invoice_type_key)
+    if not handler:
+        return None, None, "No handler found for this invoice type."
+
+    dfs_raw, dfs_clean, errors = [], [], []
+    for f in uploaded_files:
+        df_raw, df_clean, err = handler(f)
+        if err:
+            errors.append(f"{f.name}: {err}")
+        else:
+            dfs_raw.append(df_raw)
+            dfs_clean.append(df_clean)
+
+    if errors and not dfs_raw:
+        return None, None, "\n".join(errors)
+
+    df_raw_all   = pd.concat(dfs_raw,  ignore_index=True) if dfs_raw  else pd.DataFrame()
+    df_clean_all = pd.concat(dfs_clean, ignore_index=True) if dfs_clean else pd.DataFrame()
+
+    stem     = Path(uploaded_files[0].name).stem
+    filename = f"{stem} - Aggregated.xlsx"
+    out_bytes = _write_two_sheet_excel(df_raw_all, df_clean_all)
+    msg = ("\n".join(errors)) if errors else None
+    return out_bytes, filename, msg
+
+
+def _fpk_xdock(f):
+    """Freezpak XDock: Consolidated sheet, remove row 0, filter Trip totals, 2-sheet output."""
+    df, err = _freezpak_read_file(f, "Consolidated")
+    if err:
+        return None, None, err
+    df.columns = df.columns.str.strip()
+    df = _rename_safe(df, {
+        "Invoice": "InvoiceNum", "Invoice.1": "InvoiceDate",
+        "Invoice.2": "InvoiceDueDate", "Total": "TotalPO",
+        "Line": "LineHaul", "Fuel": "FuelSurcharge",
+        "Detention": "DetentionCharge", "Stop": "StopCharge",
+        "Cross": "Crossdock", "Pickup": "PickupCharge",
+        "Toll": "TollCharge", "Storage": "StorageCharge",
+        "Dock": "DockFee", "Adjusted": "AdjustedPallets"
+    })
+    if len(df) > 1:
+        df = df.iloc[1:].reset_index(drop=True)
+    df_raw = df.copy()
+    if "Trip" in df.columns:
+        df_clean = df[~df["Trip"].astype(str).str.contains("Total", na=False)].copy()
+    else:
+        df_clean = df.copy()
+    col_order = ["Store", "City", "InvoiceNum", "InvoiceDate", "InvoiceDueDate", "PO",
+                 "TotalPO", "LineHaul", "FuelSurcharge", "DetentionCharge", "StopCharge",
+                 "Crossdock", "PickupCharge", "TollCharge", "StorageCharge", "DockFee",
+                 "Quantity", "Weight", "Cube", "AdjustedPallets", "Buyer", "Trip"]
+    existing = [c for c in col_order if c in df_clean.columns]
+    extra    = [c for c in df_clean.columns if c not in existing]
+    df_clean = df_clean[existing + extra]
+    return df_raw, df_clean, None
+
+
+def _rename_safe(df, rename_dict):
+    existing = {k: v for k, v in rename_dict.items() if k in df.columns}
+    return df.rename(columns=existing)
+
+
+def _fpk_ancillary(f):
+    """Freezpak Ancillary: Sheet1, remove row 0, filter PONum, recalc TotalPerPO."""
+    df, err = _freezpak_read_file(f, "Sheet1")
+    if err:
+        return None, None, err
+    df.columns = df.columns.str.strip()
+    df = _rename_safe(df, {
+        "Invoice": "InvoiceNum", "Invoice.1": "InvoiceDueDate",
+        "PO": "FullPO", "PO.1": "PONum", "Invoice.2": "InvoiceAmount",
+        "BOL": "BOLPreparation", "CROSS DOCK": "CrossDockOut",
+        "CASE": "CaseSelection", "FLOOR": "FloorUnloading",
+        "CATCH": "CatchWeight", "Total Per": "TotalPerPO"
+    })
+    df = df.iloc[1:].reset_index(drop=True)
+    df_raw = df.copy()
+    po_col = "PONum" if "PONum" in df.columns else (df.columns[0] if len(df.columns) else None)
+    if po_col:
+        df_clean = df[~df[po_col].astype(str).str.contains("Total", na=False)].copy()
+        if len(df_clean) > 0:
+            df_clean = df_clean.iloc[:-1]
+    else:
+        df_clean = df.copy()
+    charge_cols = ["BOLPreparation", "CrossDockOut", "CaseSelection", "FloorUnloading", "CatchWeight"]
+    existing = [c for c in charge_cols if c in df_clean.columns]
+    if existing:
+        df_clean[existing] = df_clean[existing].apply(pd.to_numeric, errors="coerce")
+        df_clean["TotalPerPO"] = df_clean[existing].sum(axis=1)
+    return df_raw, df_clean, None
+
+
+def _fpk_inbound(f):
+    """Freezpak Inbound: Sheet1, remove row 0, filter PO, recalc CrossTotal."""
+    df, err = _freezpak_read_file(f, "Sheet1")
+    if err:
+        return None, None, err
+    df.columns = df.columns.str.strip()
+    df = _rename_safe(df, {
+        "Invoice": "InvoiceNum", "Invoice.1": "InvoiceDate",
+        "Invoice.2": "InvoiceDueDate", "Invoice.3": "InvoiceAmount",
+        "Monthly": "MonthlyStorageperPL", "14 Day": "14DayRate",
+        "Handling": "Handling(in and out per pallet)", "Cross": "CrossTotal"
+    })
+    df = df.iloc[1:].reset_index(drop=True)
+    df_raw = df.copy()
+    if "PO" in df.columns:
+        df_clean = df[~df["PO"].astype(str).str.contains("Total", na=False)].copy()
+    else:
+        df_clean = df.copy()
+    rate_cols = ["MonthlyStorageperPL", "14DayRate", "Handling(in and out per pallet)", "Floor unloading", "Catch Wgt"]
+    existing = [c for c in rate_cols if c in df_clean.columns]
+    if existing:
+        df_clean[existing] = df_clean[existing].apply(pd.to_numeric, errors="coerce")
+        df_clean["CrossTotal"] = df_clean[existing].sum(axis=1)
+    col_order = ["Vendor", "InvoiceNum", "InvoiceDate", "InvoiceDueDate", "PO",
+                 "InvoiceAmount", "Product", "Item", "Case", "Pallet", "Weight",
+                 "MonthlyStorageperPL", "14DayRate", "Handling(in and out per pallet)",
+                 "Floor unloading", "Catch Wgt", "CrossTotal"]
+    existing_order = [c for c in col_order if c in df_clean.columns]
+    extra = [c for c in df_clean.columns if c not in existing_order]
+    df_clean = df_clean[existing_order + extra]
+    return df_raw, df_clean, None
+
+
+def _fpk_storage(f):
+    """Freezpak Recurring/Storage: first sheet, remove row 0, filter PONum."""
+    df, err = _freezpak_read_file(f, 0)
+    if err:
+        return None, None, err
+    df.columns = df.columns.str.strip()
+    df = _rename_safe(df, {
+        "Invoice": "InvoiceNum", "Invoice.1": "InvoiceDate",
+        "Invoice.2": "InvoiceDueDate", "Lot": "PONum",
+        "Item": "ItemCode", "Item.1": "ItemDesc",
+        "Invoice.3": "InvoiceAmount", "Initial": "InitialDate",
+        "Recurring": "RecurringStorage", "Date": "DateFrom", "Date.1": "DateTo"
+    })
+    df = df.iloc[1:].reset_index(drop=True)
+    df_raw = df.copy()
+    if "PONum" in df.columns:
+        df_clean = df[~df["PONum"].astype(str).str.contains("Total", na=False)].copy()
+    else:
+        df_clean = df.copy()
+    col_order = ["Vendor", "InvoiceNum", "InvoiceDate", "InvoiceDueDate", "PO", "PONum",
+                 "InvoiceAmount", "ItemCode", "ItemDesc", "Pallet",
+                 "InitialDate", "RecurringStorage", "DateFrom", "DateTo"]
+    existing_order = [c for c in col_order if c in df_clean.columns]
+    extra = [c for c in df_clean.columns if c not in existing_order]
+    df_clean = df_clean[existing_order + extra]
+    return df_raw, df_clean, None
+
+
+# =============================================================================
+# HALLS AGGREGATE PROCESSORS
+# =============================================================================
+
+def _write_single_sheet_excel(df, sheet_name="Aggregated"):
+    """Single-sheet formatted Excel output."""
+    buf = io.BytesIO()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    for ci, col in enumerate(df.columns, 1):
+        ws.cell(row=1, column=ci, value=str(col))
+    for ri, row in enumerate(df.itertuples(index=False), 2):
+        for ci, val in enumerate(row, 1):
+            ws.cell(row=ri, column=ci, value=val)
+    _apply_output_formatting(ws)
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _halls_read_logistics(f):
+    """Read a Halls LOGISTICS data file: drop Unnamed columns and last (totals) row."""
+    try:
+        df = pd.read_excel(f, sheet_name=0)
+        f.seek(0)
+        df = df.loc[:, ~df.columns.str.contains('^Unnamed', na=False)]
+        if len(df) > 0:
+            df = df.iloc[:-1]
+        return df, ""
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _halls_dedup_columns(dfs):
+    """Collect all column names across DataFrames, deduplicated, order preserved."""
+    seen, ordered = set(), []
+    for df in dfs:
+        for col in df.columns:
+            if col not in seen:
+                seen.add(col)
+                ordered.append(col)
+    return ordered
+
+
+def _halls_simple_aggregate(uploaded_files):
+    """
+    Shared logic for Ancillary, Inbound, Sort&Selection, Renewal.
+    LOGISTICS files are data; anything else is an AP summary (shown but not aggregated).
+    Returns (merged_df, ap_info_list, errors).
+    """
+    dfs, ap_info, errors = [], [], []
+    for f in uploaded_files:
+        if "LOGISTICS" in f.name.upper():
+            df, err = _halls_read_logistics(f)
+            if err:
+                errors.append(f"{f.name}: {err}")
+            else:
+                dfs.append(df)
+        else:
+            # AP/summary file -- read invoice header info only
+            try:
+                df_ap = pd.read_excel(f, sheet_name=0)
+                f.seek(0)
+                if len(df_ap) > 1:
+                    row = df_ap.iloc[1]
+                    inv  = next((row.get(k, None) for k in ["Invoice#", "INVOICE", "InvoiceNum"] if k in df_ap.columns), "N/A")
+                    date = next((row.get(k, None) for k in ["Invoice Date", "DATE", "InvoiceDate"] if k in df_ap.columns), "N/A")
+                    due  = next((row.get(k, None) for k in ["Due Date", "DUE DATE", "InvoiceDueDate"] if k in df_ap.columns), "N/A")
+                    tot  = round(df_ap["Total"].sum(), 2) if "Total" in df_ap.columns else 0
+                    ap_info.append({"File": f.name, "Invoice": inv, "Invoice Date": date, "Due Date": due, "Total": f"${tot:,.2f}"})
+            except Exception as exc:
+                errors.append(f"{f.name} (AP read): {exc}")
+    return dfs, ap_info, errors
+
+
+def _halls_ancillary_proc(files):
+    dfs, ap_info, errors = _halls_simple_aggregate(files)
+    if not dfs:
+        return None, None, "\n".join(errors) or "No LOGISTICS files found. Files with LOGISTICS in the name are used as data sources."
+    col_order = _halls_dedup_columns(dfs)
+    merged = pd.concat(dfs, ignore_index=True)
+    existing = [c for c in col_order if c in merged.columns]
+    out = _write_single_sheet_excel(merged[existing])
+    return out, "Halls_Ancillary_Aggregated.xlsx", "\n".join(errors) if errors else None
+
+
+def _halls_inbound_proc(files):
+    dfs, ap_info, errors = _halls_simple_aggregate(files)
+    if not dfs:
+        return None, None, "\n".join(errors) or "No LOGISTICS files found."
+    col_order = _halls_dedup_columns(dfs)
+    merged = pd.concat(dfs, ignore_index=True)
+    existing = [c for c in col_order if c in merged.columns]
+    out = _write_single_sheet_excel(merged[existing], "Inbound")
+    return out, "Halls_Inbound_Aggregated.xlsx", "\n".join(errors) if errors else None
+
+
+def _halls_sort_selection_proc(files):
+    dfs, ap_info, errors = _halls_simple_aggregate(files)
+    if not dfs:
+        return None, None, "\n".join(errors) or "No LOGISTICS files found."
+    col_order = _halls_dedup_columns(dfs)
+    merged = pd.concat(dfs, ignore_index=True)
+    existing = [c for c in col_order if c in merged.columns]
+    out = _write_single_sheet_excel(merged[existing], "Sort&Selection")
+    return out, "Halls_SortSelection_Aggregated.xlsx", "\n".join(errors) if errors else None
+
+
+def _halls_renewal_proc(files):
+    dfs, ap_info, errors = _halls_simple_aggregate(files)
+    if not dfs:
+        return None, None, "\n".join(errors) or "No LOGISTICS files found."
+    col_order = _halls_dedup_columns(dfs)
+    merged = pd.concat(dfs, ignore_index=True)
+    existing = [c for c in col_order if c in merged.columns]
+    out = _write_single_sheet_excel(merged[existing], "Renewal")
+    return out, "Halls_Renewal_Aggregated.xlsx", "\n".join(errors) if errors else None
+
+
+def _halls_trucking_fsc_proc(files):
+    """
+    Halls Trucking & FSC (XDock notebook logic).
+    Non-XDOCK files: read 'Logistics' sheet.
+    Splits into 4 sheets: raw, withoutSubtotals, CPU (TL null), XDOCK (TL not null).
+    """
+    dfs_raw, errors = [], []
+    for f in files:
+        if "XDOCK" in f.name.upper():
+            # AP/summary file for this type -- skip aggregation
+            continue
+        try:
+            df = pd.read_excel(f, sheet_name="Logistics")
+            f.seek(0)
+            dfs_raw.append(df)
+        except Exception:
+            try:
+                f.seek(0)
+                df = pd.read_excel(f, sheet_name=0)
+                f.seek(0)
+                dfs_raw.append(df)
+            except Exception as exc:
+                errors.append(f"{f.name}: {exc}")
+
+    if not dfs_raw:
+        return None, None, "\n".join(errors) or "No Logistics sheet found in uploaded files."
+
+    col_order = _halls_dedup_columns(dfs_raw)
+    df_raw   = pd.concat(dfs_raw, ignore_index=True)
+    existing = [c for c in col_order if c in df_raw.columns]
+    df_raw   = df_raw[existing]
+
+    if "TL" in df_raw.columns:
+        tl = df_raw["TL"].astype(str)
+        df_clean = df_raw[~tl.str.contains("Total", na=False) & ~tl.str.contains("^TL$", na=False)]
+        df_cpu   = df_clean[df_clean["TL"].isna() | (df_clean["TL"].astype(str).str.strip() == "nan")]
+        df_xdock = df_clean[df_clean["TL"].notna() & (df_clean["TL"].astype(str).str.strip() != "nan")]
+    else:
+        df_clean = df_raw.copy()
+        df_cpu   = pd.DataFrame(columns=df_raw.columns)
+        df_xdock = pd.DataFrame(columns=df_raw.columns)
+
+    buf = io.BytesIO()
+    wb  = Workbook()
+
+    for sheet_name, df in [("raw", df_raw), ("withoutSubtotals", df_clean),
+                            ("CPU", df_cpu), ("XDOCK", df_xdock)]:
+        ws = wb.active if sheet_name == "raw" else wb.create_sheet(title=sheet_name)
+        ws.title = sheet_name
+        for ci, col in enumerate(df.columns, 1):
+            ws.cell(row=1, column=ci, value=str(col))
+        for ri, row in enumerate(df.itertuples(index=False), 2):
+            for ci, val in enumerate(row, 1):
+                ws.cell(row=ri, column=ci, value=val)
+        _apply_output_formatting(ws)
+
+    wb.save(buf)
+    return buf.getvalue(), "Halls_TruckingFSC_Aggregated.xlsx", "\n".join(errors) if errors else None
+
+
+def process_halls_aggregate(uploaded_files, invoice_type_key: str) -> tuple:
+    handlers = {
+        "halls_warehousing_ancillary":      _halls_ancillary_proc,
+        "halls_warehousing_inbound":        _halls_inbound_proc,
+        "halls_warehousing_sort_selection": _halls_sort_selection_proc,
+        "halls_warehousing_renewal":        _halls_renewal_proc,
+        "halls_trucking_fsc":               _halls_trucking_fsc_proc,
+    }
+    handler = handlers.get(invoice_type_key)
+    if not handler:
+        return None, None, f"No handler configured for {invoice_type_key}."
+    return handler(uploaded_files)
+
+
+def route_invoice(uploaded_files, xdock_key: str, invoice_type_key: str) -> tuple:
+    # uploaded_files may be a single UploadedFile or a list
     if invoice_type_key in VALIDATED_INVOICE_KEYS:
-        return process_validated_invoice(uploaded_file)
+        f = uploaded_files if not isinstance(uploaded_files, list) else uploaded_files[0]
+        return process_validated_invoice(f)
     if invoice_type_key in EFH_INVOICE_KEYS:
-        return process_efh_invoice(uploaded_file)
+        f = uploaded_files if not isinstance(uploaded_files, list) else uploaded_files[0]
+        return process_efh_invoice(f)
+    if invoice_type_key in FREEZPAK_AGGREGATE_KEYS:
+        files = uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]
+        return process_freezpak_aggregate(files, invoice_type_key)
+    if invoice_type_key in HALLS_AGGREGATE_KEYS:
+        files = uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]
+        return process_halls_aggregate(files, invoice_type_key)
     return None, None, "PLACEHOLDER"
 
 
@@ -359,6 +813,9 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
     is_ph        = invoice_type_cfg["placeholder"]
     is_validated = (inv_key in VALIDATED_INVOICE_KEYS)
     is_efh       = (inv_key in EFH_INVOICE_KEYS)
+    is_fpk_agg   = (inv_key in FREEZPAK_AGGREGATE_KEYS)
+    is_halls_agg = (inv_key in HALLS_AGGREGATE_KEYS)
+    is_multi     = is_fpk_agg or is_halls_agg
 
     if is_ph:
         st.markdown('<div class="placeholder-box"><b>Logic not configured yet.</b> Upload and processing workflow will be added later. You can still upload a file to preview its contents.</div>', unsafe_allow_html=True)
@@ -371,9 +828,10 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
     else:
         st.markdown(f'<div class="info-box"><b>How to use:</b><br><span class="step-badge">1</span>Upload your {xdock_display} &mdash; {inv_name} invoice file (Excel or CSV)<br><span class="step-badge">2</span>Review the raw data preview<br><span class="step-badge">3</span>Click <b>Process Invoice</b> to run the automation<br><span class="step-badge">4</span>Download the output file</div>', unsafe_allow_html=True)
 
-    accepted_types = ["xlsx", "xls"] if (is_validated or is_efh) else ["xlsx", "xls", "csv"]
+    accepted_types = ["xlsx", "xls"] if (is_validated or is_efh or is_fpk_agg or is_halls_agg) else ["xlsx", "xls", "csv"]
     file_hint = ("Excel (.xlsx) with AP tab (+ optional Details tab)" if is_efh
                  else "Excel (.xlsx) with Detail and AP tabs" if is_validated
+                 else "Upload one or more Excel files (.xlsx)" if (is_fpk_agg or is_halls_agg)
                  else "Excel (.xlsx, .xls) or CSV")
 
     uploaded = st.file_uploader(
@@ -381,18 +839,22 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
         type=accepted_types,
         key=f"upload_{inv_key}",
         label_visibility="collapsed",
+        accept_multiple_files=is_multi,
     )
 
-    if uploaded:
+    # Normalise to list for uniform handling
+    uploaded_list = uploaded if isinstance(uploaded, list) else ([uploaded] if uploaded else [])
+    if uploaded_list:
+        uploaded = uploaded_list  # always a list from here
         try:
-            raw_df = (pd.read_csv(uploaded) if uploaded.name.endswith(".csv")
-                      else pd.read_excel(uploaded, sheet_name=0))
-            uploaded.seek(0)
+            raw_df = (pd.read_csv(uploaded[0]) if uploaded[0].name.endswith(".csv")
+                      else pd.read_excel(uploaded[0], sheet_name=0))
+            uploaded[0].seek(0)
         except Exception as exc:
             st.markdown(f'<div class="warning-box">Could not preview file: {exc}</div>', unsafe_allow_html=True)
             return
 
-        sheet_label = "Detail tab rows" if is_validated else "AP tab rows" if is_efh else "Total Rows"
+        sheet_label = "Detail tab rows" if is_validated else "AP tab rows" if is_efh else "Rows (file 1)" if (is_fpk_agg or is_halls_agg) else "Total Rows"
 
         freight_total_html = ""
         for col in raw_df.columns:
@@ -439,7 +901,8 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
             if st.session_state.get(sess_processed):
                 if sess_output not in st.session_state:
                     with st.spinner("Running validation and processing..."):
-                        uploaded.seek(0)
+                        for uf in uploaded:
+                            uf.seek(0)
                         st.session_state[sess_output] = route_invoice(uploaded, xdock_key, inv_key)
 
                 output_bytes, output_filename, error_msg = st.session_state[sess_output]
@@ -512,12 +975,14 @@ def render_aggregator_tab():
 
     dfs, file_meta, errors = [], [], []
     for f in uploaded_files:
-        df, err = _read_first_sheet(f)
+        sheet_list, err = _read_all_sheets(f)
         if err:
             errors.append(f"<b>{f.name}</b>: {err}")
         else:
-            dfs.append(df)
-            file_meta.append({"name": f.name, "rows": len(df), "cols": len(df.columns)})
+            for sheet_name, df in sheet_list:
+                dfs.append(df)
+                label = f.name if len(sheet_list) == 1 else f"{f.name}  [{sheet_name}]"
+                file_meta.append({"File": label, "Rows": len(df), "Columns": len(df.columns)})
 
     for e in errors:
         st.markdown(f'<div class="error-box">{e}</div>', unsafe_allow_html=True)
@@ -525,22 +990,23 @@ def render_aggregator_tab():
     if not dfs:
         return
 
-    total_rows = sum(m["rows"] for m in file_meta)
+    total_rows = sum(m["Rows"] for m in file_meta)
     all_cols   = set()
     for df in dfs:
         all_cols.update(_normalize_col(c) for c in df.columns)
 
     st.markdown(f"""
     <div class="metric-row">
-        <div class="metric-card"><div class="metric-value">{len(dfs)}</div><div class="metric-label">Files Loaded</div></div>
+        <div class="metric-card"><div class="metric-value">{len(uploaded_files)}</div><div class="metric-label">Files Loaded</div></div>
+        <div class="metric-card"><div class="metric-value">{len(dfs)}</div><div class="metric-label">Sheets Found</div></div>
         <div class="metric-card"><div class="metric-value">{total_rows:,}</div><div class="metric-label">Total Rows</div></div>
         <div class="metric-card"><div class="metric-value">{len(all_cols)}</div><div class="metric-label">Unique Columns</div></div>
     </div>
     """, unsafe_allow_html=True)
 
-    with st.expander("\U0001f4cb File Breakdown", expanded=True):
+    with st.expander("\U0001f4cb Sheet Breakdown", expanded=True):
         st.dataframe(
-            pd.DataFrame(file_meta).rename(columns={"name": "File", "rows": "Rows", "cols": "Columns"}),
+            pd.DataFrame(file_meta),
             use_container_width=True, hide_index=True
         )
 
