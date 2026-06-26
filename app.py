@@ -874,10 +874,11 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
 
         st.markdown(f"""
         <div class="metric-row">
+            <div class="metric-card"><div class="metric-value">{len(uploaded) if isinstance(uploaded, list) else 1}</div><div class="metric-label">{"Files" if isinstance(uploaded, list) and len(uploaded) > 1 else sheet_label}</div></div>
             <div class="metric-card"><div class="metric-value">{len(raw_df):,}</div><div class="metric-label">{sheet_label}</div></div>
             <div class="metric-card"><div class="metric-value">{len(raw_df.columns)}</div><div class="metric-label">Columns</div></div>
             <div class="metric-card"><div class="metric-value">{raw_df.isnull().sum().sum()}</div><div class="metric-label">Blank Cells</div></div>
-            <div class="metric-card"><div class="metric-value">{uploaded.name.split(".")[-1].upper()}</div><div class="metric-label">File Type</div></div>{freight_total_html}
+            <div class="metric-card"><div class="metric-value">{uploaded[0].name.split(".")[-1].upper() if isinstance(uploaded, list) else uploaded.name.split(".")[-1].upper()}</div><div class="metric-label">File Type</div></div>{freight_total_html}
         </div>
         """, unsafe_allow_html=True)
 
