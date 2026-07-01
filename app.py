@@ -653,41 +653,67 @@ def _write_single_sheet_excel(df, sheet_name="Aggregated"):
 
 
 def _halls_read_logistics(f):
-    """Read a Halls LOGISTICS data file.
+    """Read a Halls LOGISTICS data file, correctly handling merged-cell headers.
 
-    Handles merged-cell headers: e.g. 'Description' merged across 2 cols means
-    pandas names them 'Description' + 'Unnamed:X', but the actual data lands in
-    the Unnamed column. Fix: forward-fill column names, then consolidate
-    duplicate-named columns by taking the first non-null value per row.
-    Also drops all-blank rows and the last totals row.
+    Strategy:
+      1. Use openpyxl to read the actual merge regions in row 1 and assign
+         each column the correct header label (no guessing from forward-fill).
+      2. For duplicate-named columns (sub-columns of a merge), keep the one
+         with the most non-null data values — that's where the template puts
+         actual numbers.
+      3. Drop all-blank rows and the last totals row.
     """
     try:
-        df = pd.read_excel(f, sheet_name=0, dtype=str)
-        f.seek(0)
+        raw = f.read(); f.seek(0)
 
-        # 1. Forward-fill Unnamed column names from the previous named column
-        cols = list(df.columns)
-        for i in range(1, len(cols)):
-            if str(cols[i]).startswith("Unnamed"):
-                cols[i] = cols[i - 1]
-        df.columns = cols
+        # --- Step 1: resolve headers via openpyxl merge metadata ---
+        from openpyxl import load_workbook as _opxl_lw
+        _wb = _opxl_lw(io.BytesIO(raw), data_only=True)
+        _ws = _wb.active
+        max_col = _ws.max_column
 
-        # 2. Consolidate duplicate column names (take first non-null per row)
-        unique_cols = list(dict.fromkeys(cols))   # preserve order, deduplicate
+        # Build a 1-indexed header list from row-1 cell values
+        hdr = [None] * (max_col + 1)
+        for cell in _ws[1]:
+            if cell.value is not None:
+                hdr[cell.column] = str(cell.value).strip()
+
+        # Expand every merged region in row 1 with its top-left label
+        for merge in _ws.merged_cells.ranges:
+            if merge.min_row == 1:
+                label = _ws.cell(merge.min_row, merge.min_col).value
+                if label is not None:
+                    label = str(label).strip()
+                    for c in range(merge.min_col, merge.max_col + 1):
+                        hdr[c] = label
+
+        header = hdr[1:]   # convert to 0-indexed list
+
+        # --- Step 2: read data rows (skip header row 1) ---
+        df_raw = pd.read_excel(io.BytesIO(raw), sheet_name=0,
+                               header=None, skiprows=1, dtype=str)
+
+        ncols = min(len(header), df_raw.shape[1])
+        df_raw = df_raw.iloc[:, :ncols].copy()
+        df_raw.columns = header[:ncols]
+
+        # Drop columns with no label
+        df_raw = df_raw.loc[:, [h is not None for h in df_raw.columns]]
+
+        # --- Step 3: for duplicate column names pick sub-col with most data ---
+        unique_cols = list(dict.fromkeys(df_raw.columns))
         consolidated = {}
         for col in unique_cols:
-            group = df.loc[:, [c == col for c in df.columns]]
-            if group.shape[1] > 1:
-                # bfill across the group then take the first column
-                consolidated[col] = group.bfill(axis=1).iloc[:, 0]
-            else:
+            group = df_raw.loc[:, [c == col for c in df_raw.columns]]
+            if group.shape[1] == 1:
                 consolidated[col] = group.iloc[:, 0]
+            else:
+                # Pick the sub-column with the highest non-null count
+                best = group.iloc[:, group.notna().sum().argmax()]
+                consolidated[col] = best
         df = pd.DataFrame(consolidated)
 
-        # 3. Drop columns whose name looks like a bare integer (Excel artefact)
-        df = df.loc[:, ~df.columns.astype(str).str.match(r'^\d+$')]
-
-        # 4. Drop all-blank rows and last totals row
+        # --- Step 4: drop all-blank rows and last totals row ---
         df = df.dropna(how="all").reset_index(drop=True)
         if len(df) > 0:
             df = df.iloc[:-1]
