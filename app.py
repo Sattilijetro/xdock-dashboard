@@ -947,20 +947,28 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
         wb.remove(wb["Sheet2"])
 
     # ---------------------------------------------------------------- Format output sheets
-    # Sheet1 is large (~14K rows): apply header + filter only (no full width scan).
+    # Preserve original template styling — only add AutoFilter, freeze panes,
+    # and auto-fit column widths (no header colour/font overrides).
     for _sn in wb.sheetnames:
         _ws = wb[_sn]
+        _lc = _ws.max_column
+        _lr = _ws.max_row
+        scan_to = min(_lr, 200)
+        # Auto-fit column widths
+        for _ci in range(1, _lc + 1):
+            _col_letter = get_column_letter(_ci)
+            _max_len = max(
+                (len(str(_ws.cell(row=_r, column=_ci).value or "")) for _r in range(1, scan_to + 1)),
+                default=8,
+            )
+            _ws.column_dimensions[_col_letter].width = min(max(_max_len + 2, 8), 40)
+        # AutoFilter on header row
         if _sn == "Sheet1":
-            _lc = _ws.max_column
-            for _ci in range(1, _lc + 1):
-                _hdr = _ws.cell(row=1, column=_ci)
-                _hdr.fill = _HDR_FILL
-                _hdr.font = _HDR_FONT
-                _hdr.alignment = _CTR
             _ws.auto_filter.ref = f"A1:{get_column_letter(_lc)}1"
             _ws.freeze_panes = "A3"   # Sheet1 has 2 header rows
         else:
-            _apply_output_formatting(_ws)
+            _ws.auto_filter.ref = f"A1:{get_column_letter(_lc)}1"
+            _ws.freeze_panes = "A2"
 
     # ---------------------------------------------------------------- Save
     buf = io.BytesIO()
