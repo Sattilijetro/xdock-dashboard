@@ -817,7 +817,7 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
     Process the Halls Warehousing Ancillary Invoice template (single .xlsx file).
 
     Sheet1:
-      - Validate/fix BOL (col M) on Total rows: 5.94 auto-divided to 2.97; >2.97 flagged.
+      - Validate BOL (col M) on Total rows (read-only): 5.94 flagged as possible case split; >2.97 flagged.
       - Compute Case Selection (col T) = O/J; >0.240 flagged.
       - Write computed values into col S (BOL) and col T (Case Selection).
 
@@ -846,59 +846,48 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
         return None, None, "Expected a 'Sheet1' tab — not found in this file."
     ws1 = wb["Sheet1"]
 
-    bol_flags  = []  # (row_num, original_value)  — needs manual review
+    bol_flags  = []  # (row_num, original_value)  — exceeds $2.97
+    bol_split  = []  # rows where BOL = 5.94 (likely a forgotten case split)
     cs_flags   = []  # (row_num, computed_value)   — exceeds 0.240
-    bol_fixed  = []  # rows where 5.94 was auto-corrected to 2.97
 
     # Header rows are 1 and 2; data starts at row 3.
     # Column index mapping (0-based within row tuple):
-    #   F=5, J=9, M=12, O=14, S=18, T=19
+    #   F=5, J=9, M=12, O=14
+    # NOTE: Sheet1 is READ-ONLY — no values are written back. Only the Invoice
+    #       tab (col B) is modified.
     for row in ws1.iter_rows(min_row=3, max_row=ws1.max_row):
         f_cell = row[5]   # PO# / "XXXXX Total"
         m_cell = row[12]  # BOL Preparation amount
         o_cell = row[14]  # Case Selection amount
         j_cell = row[9]   # Cases count
-        s_cell = row[18]  # BOL computed output
-        t_cell = row[19]  # Case Selection computed output
 
         f_str      = str(f_cell.value).strip() if f_cell.value is not None else ""
         f_upper    = f_str.upper()
         # PO-level Total rows look like "70223 Total"; skip "Grand Total" catch-all row
         is_total   = f_upper.endswith("TOTAL") and f_upper != "GRAND TOTAL"
 
-        # --- BOL: only on PO Total rows ---
+        # --- BOL check: only on PO Total rows (read-only, no file edits) ---
         if is_total and m_cell.value is not None:
             try:
-                bol     = float(m_cell.value)
-                bol_r   = round(bol, 4)          # eliminate float noise (e.g. 2.9700000000000006)
-                if round(bol, 2) == 5.94:
-                    # Forgot to split into 2 cases — auto-correct to 2.97
-                    m_cell.value = 2.97
-                    s_cell.value = 2.97
-                    bol_fixed.append(f_cell.row)
+                bol_r = round(float(m_cell.value), 4)
+                if round(bol_r, 2) == 5.94:
+                    # Possible forgotten case split: 5.94 / 2 = 2.97
+                    bol_split.append(f_cell.row)
                 elif bol_r > 2.97:
-                    s_cell.value = bol_r
                     bol_flags.append((f_cell.row, bol_r))
-                else:
-                    s_cell.value = bol_r
             except (TypeError, ValueError):
-                s_cell.value = ""
-        elif not is_total:
-            s_cell.value = ""
+                pass
 
-        # --- Case Selection: all data rows ---
+        # --- Case Selection check: all data rows (read-only, no file edits) ---
         try:
             o_val = float(o_cell.value) if o_cell.value is not None else None
             j_val = float(j_cell.value) if j_cell.value is not None else None
             if o_val is not None and j_val and j_val != 0:
                 cs = round(o_val / j_val, 6)
-                t_cell.value = cs
                 if cs > 0.240:
                     cs_flags.append((f_cell.row, round(cs, 4)))
-            else:
-                t_cell.value = ""
         except (TypeError, ValueError):
-            t_cell.value = ""
+            pass
 
     # ---------------------------------------------------------------- Invoice tab
     if "Invoice" not in wb.sheetnames:
@@ -1001,11 +990,14 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
         f"Base invoice: {base_inv}",
         f"Unique stores: {len(store_list)}  →  {n_groups} invoice group(s)",
     ]
-    if bol_fixed:
-        lines.append(f"✓ BOL auto-corrected (5.94 → 2.97) on {len(bol_fixed)} row(s): rows {bol_fixed}")
+    if bol_split:
+        lines.append(
+            f"⚠️ BOL = $5.94 (possible forgotten case split — 5.94 ÷ 2 = $2.97) on row(s): "
+            + ", ".join(str(r) for r in bol_split)
+        )
     if bol_flags:
         lines.append(
-            f"⚠️ BOL exceeds $2.97 — manual review required: "
+            f"⚠️ BOL exceeds $2.97 — review required: "
             + ", ".join(f"row {r} = ${v}" for r, v in bol_flags)
         )
     if cs_flags:
@@ -1095,7 +1087,7 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
             '<b>&#9888;&nbsp; Validation Checks &mdash; Sheet1</b><br><br>'
             '<b>BOL</b> &nbsp;&mdash;&nbsp; Column M on Total rows<br>'
             '&nbsp;&nbsp;&bull;&nbsp; Max: <b>$2.97</b><br>'
-            '&nbsp;&nbsp;&bull;&nbsp; If <b>$5.94</b> found: auto-corrected to $2.97 (forgotten case split)<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; If <b>$5.94</b> found: flagged as possible case split (5.94 &divide; 2 = $2.97)<br>'
             '&nbsp;&nbsp;&bull;&nbsp; Any other value above $2.97: <b>flagged for review</b><br><br>'
             '<b>Case Selection</b> &nbsp;&mdash;&nbsp; Case Selection Amount &divide; Case<br>'
             '&nbsp;&nbsp;&bull;&nbsp; Max: <b>0.240</b><br>'
