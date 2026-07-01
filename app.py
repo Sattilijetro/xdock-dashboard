@@ -222,26 +222,17 @@ def _align_df(df, canon):
     return df.rename(columns=rename_map)
 
 def _df_to_formatted_excel(df, sheet_name="Output"):
+    """DataFrame → formatted Excel with numeric coercion, per-column widths, header style."""
     buf = io.BytesIO()
     wb  = Workbook()
     ws  = wb.active
     ws.title = sheet_name
     for ci, col in enumerate(df.columns, 1):
-        cell = ws.cell(row=1, column=ci, value=str(col))
-        cell.font      = Font(bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=1, column=ci, value=str(col))
     for ri, row in enumerate(df.itertuples(index=False), 2):
         for ci, val in enumerate(row, 1):
-            cell = ws.cell(row=ri, column=ci, value=val)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-    col_widths = []
-    for ci in range(1, ws.max_column + 1):
-        mx = max((len(str(ws.cell(row=r, column=ci).value or "")) for r in range(1, ws.max_row + 1)), default=8)
-        col_widths.append(mx)
-    uniform = max(min(max(col_widths, default=10) + 2, 25), 10)
-    for ci in range(1, ws.max_column + 1):
-        ws.column_dimensions[get_column_letter(ci)].width = uniform
-    ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+            ws.cell(row=ri, column=ci, value=_coerce_numeric(val))
+    _apply_output_formatting(ws)
     wb.save(buf)
     return buf.getvalue()
 
@@ -379,24 +370,60 @@ def process_generic(uploaded_file, xdock_label: str) -> tuple:
 # FREEZPAK AGGREGATE PROCESSORS
 # =============================================================================
 
-def _apply_output_formatting(ws):
-    """Bold header, center all, equal column width, auto-filter."""
-    from openpyxl.styles import Alignment, Font
-    from openpyxl.utils import get_column_letter
+# Header style constants (shared by all output formatters)
+_HDR_FILL = PatternFill("solid", fgColor="FF1E3A5F")  # dark navy (ARGB), matches dashboard theme
+_HDR_FONT = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
+_DAT_FONT = Font(bold=False, name="Calibri", size=10)
+_CTR      = Alignment(horizontal="center", vertical="center", wrap_text=False)
+
+
+def _coerce_numeric(val):
+    """Try to convert a value to int or float; leave strings/None unchanged."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return val
+    s = str(val).strip().replace(",", "")
+    if s == "" or s.lower() in ("nan", "none", "n/a", "-"):
+        return None
+    try:
+        f = float(s)
+        return int(f) if f == int(f) else f
+    except (ValueError, TypeError):
+        return val
+
+
+def _apply_output_formatting(ws, sample_rows=200):
+    """
+    Per-column auto-fit widths, highlighted header row, auto-filter, freeze row 1.
+    sample_rows: max rows scanned for width calculation (keeps large sheets fast).
+    """
     last_row = ws.max_row
     last_col = ws.max_column
-    col_widths = []
+    scan_to  = min(last_row, sample_rows)
+
     for ci in range(1, last_col + 1):
-        mx = max((len(str(ws.cell(row=r, column=ci).value or "")) for r in range(1, last_row + 1)), default=8)
-        col_widths.append(mx)
-    uniform = max(min(max(col_widths, default=10) + 2, 28), 10)
-    for ci in range(1, last_col + 1):
-        ws.column_dimensions[get_column_letter(ci)].width = uniform
+        col_letter = get_column_letter(ci)
+        # Per-column width: sample first sample_rows rows
+        max_len = max(
+            (len(str(ws.cell(row=r, column=ci).value or "")) for r in range(1, scan_to + 1)),
+            default=8,
+        )
+        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 8), 40)
+
+        # Style every cell in this column
         for ri in range(1, last_row + 1):
             cell = ws.cell(row=ri, column=ci)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.font = Font(bold=True) if ri == 1 else Font(bold=False)
-    ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}{last_row}"
+            if ri == 1:
+                cell.fill      = _HDR_FILL
+                cell.font      = _HDR_FONT
+                cell.alignment = _CTR
+            else:
+                cell.font      = _DAT_FONT
+                cell.alignment = _CTR
+
+    ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}1"
+    ws.freeze_panes    = "A2"
 
 
 def _freezpak_read_file(f, sheet_name):
@@ -416,16 +443,16 @@ def _freezpak_read_file(f, sheet_name):
 
 
 def _write_two_sheet_excel(df_raw, df_clean, sheet_raw="raw", sheet_clean="withoutSubtotals"):
-    """Write two DataFrames to separate sheets with formatting."""
+    """Write two DataFrames to separate sheets with numeric coercion and formatting."""
     buf = io.BytesIO()
-    wb = Workbook()
+    wb  = Workbook()
     ws1 = wb.active
     ws1.title = sheet_raw
     for ci, col in enumerate(df_raw.columns, 1):
         ws1.cell(row=1, column=ci, value=str(col))
     for ri, row in enumerate(df_raw.itertuples(index=False), 2):
         for ci, val in enumerate(row, 1):
-            ws1.cell(row=ri, column=ci, value=val)
+            ws1.cell(row=ri, column=ci, value=_coerce_numeric(val))
     _apply_output_formatting(ws1)
 
     ws2 = wb.create_sheet(title=sheet_clean)
@@ -433,7 +460,7 @@ def _write_two_sheet_excel(df_raw, df_clean, sheet_raw="raw", sheet_clean="witho
         ws2.cell(row=1, column=ci, value=str(col))
     for ri, row in enumerate(df_clean.itertuples(index=False), 2):
         for ci, val in enumerate(row, 1):
-            ws2.cell(row=ri, column=ci, value=val)
+            ws2.cell(row=ri, column=ci, value=_coerce_numeric(val))
     _apply_output_formatting(ws2)
 
     wb.save(buf)
@@ -610,16 +637,16 @@ def _fpk_storage(f):
 # =============================================================================
 
 def _write_single_sheet_excel(df, sheet_name="Aggregated"):
-    """Single-sheet formatted Excel output."""
+    """Single-sheet formatted Excel output with numeric coercion."""
     buf = io.BytesIO()
-    wb = Workbook()
-    ws = wb.active
+    wb  = Workbook()
+    ws  = wb.active
     ws.title = sheet_name
     for ci, col in enumerate(df.columns, 1):
         ws.cell(row=1, column=ci, value=str(col))
     for ri, row in enumerate(df.itertuples(index=False), 2):
         for ci, val in enumerate(row, 1):
-            ws.cell(row=ri, column=ci, value=val)
+            ws.cell(row=ri, column=ci, value=_coerce_numeric(val))
     _apply_output_formatting(ws)
     wb.save(buf)
     return buf.getvalue()
@@ -778,7 +805,7 @@ def _halls_trucking_fsc_proc(files):
             ws.cell(row=1, column=ci, value=str(col))
         for ri, row in enumerate(df.itertuples(index=False), 2):
             for ci, val in enumerate(row, 1):
-                ws.cell(row=ri, column=ci, value=val)
+                ws.cell(row=ri, column=ci, value=_coerce_numeric(val))
         _apply_output_formatting(ws)
 
     wb.save(buf)
@@ -907,23 +934,33 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
         suffix = (idx // 45) + 1
         store_to_inv[store] = f"{base_inv}-{suffix}"
 
-    # Rebuild Sheet2
-    if "Sheet2" in wb.sheetnames:
-        ws2 = wb["Sheet2"]
-        for r in range(2, ws2.max_row + 1):
-            ws2.cell(r, 1).value = None
-            ws2.cell(r, 2).value = None
-    else:
-        ws2 = wb.create_sheet("Sheet2")
-    ws2.cell(1, 1).value = "STORE"
-    ws2.cell(1, 2).value = "Invoice#"
-    for idx, store in enumerate(store_list):
-        ws2.cell(idx + 2, 1).value = store
-        ws2.cell(idx + 2, 2).value = store_to_inv[store]
-
     # Replace Invoice col B with suffixed invoice numbers
     for r, store in row_store.items():
         wsi.cell(r, 2).value = store_to_inv[store]
+
+    # ---------------------------------------------------------------- Cleanup helpers
+    # Remove STORE helper column (col H) from Invoice tab — no longer needed
+    wsi.delete_cols(8)
+
+    # Remove Sheet2 helper tab from workbook
+    if "Sheet2" in wb.sheetnames:
+        wb.remove(wb["Sheet2"])
+
+    # ---------------------------------------------------------------- Format output sheets
+    # Sheet1 is large (~14K rows): apply header + filter only (no full width scan).
+    for _sn in wb.sheetnames:
+        _ws = wb[_sn]
+        if _sn == "Sheet1":
+            _lc = _ws.max_column
+            for _ci in range(1, _lc + 1):
+                _hdr = _ws.cell(row=1, column=_ci)
+                _hdr.fill = _HDR_FILL
+                _hdr.font = _HDR_FONT
+                _hdr.alignment = _CTR
+            _ws.auto_filter.ref = f"A1:{get_column_letter(_lc)}1"
+            _ws.freeze_panes = "A3"   # Sheet1 has 2 header rows
+        else:
+            _apply_output_formatting(_ws)
 
     # ---------------------------------------------------------------- Save
     buf = io.BytesIO()
@@ -1011,22 +1048,40 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
     elif is_efh:
         st.markdown(f'<div class="info-box"><b>How to use:</b><br><span class="step-badge">1</span>Upload your {inv_name} invoice workbook (.xlsx) &mdash; should have an <b>AP</b> tab and optionally a <b>Details</b> tab<br><span class="step-badge">2</span>Review the raw data preview<br><span class="step-badge">3</span>Click <b>Process Invoice</b> &mdash; PO numbers normalised, freight totals validated<br><span class="step-badge">4</span>Download the formatted <b>AP-only output</b>, or the <b>Exception Report</b> if totals do not match</div>', unsafe_allow_html=True)
     elif is_ancillary_inv:
+        # ── How to use ──────────────────────────────────────────────────
         st.markdown(
             '<div class="info-box">'
-            '<b>How to use:</b><br>'
-            '<span class="step-badge">1</span>Upload your Ancillary Invoice template (.xlsx) &mdash; must have <b>Sheet1</b>, <b>Invoice</b>, and <b>Sheet2</b> tabs<br>'
-            '<span class="step-badge">2</span>Click <b>Process Invoice</b> &mdash; the following checks run automatically:<br>'
-            '<span class="step-badge" style="background:#ff9800">&#10003;</span>'
-            '<b>BOL</b> (Sheet1 col&nbsp;M on Total rows) &mdash; max <b>$2.97</b>. '
-            'If <b>$5.94</b> detected, auto-corrected to $2.97 (split by 2). Any other value above $2.97 is flagged for review.<br>'
-            '<span class="step-badge" style="background:#ff9800">&#10003;</span>'
-            '<b>Case Selection</b> (Sheet1 col&nbsp;O &divide; col&nbsp;J) &mdash; max <b>0.240</b>. Values above 0.240 are flagged for review. Errors left blank.<br>'
-            '<span class="step-badge" style="background:#4caf50">&#10003;</span>'
-            '<b>STORE column</b> (Invoice tab col&nbsp;H) &mdash; first 3 digits of PO number extracted and written as values.<br>'
-            '<span class="step-badge" style="background:#4caf50">&#10003;</span>'
-            '<b>Invoice suffix</b> &mdash; unique stores grouped in batches of 45 and assigned suffixes '
-            '(<b>InvoiceNum-1</b>, <b>InvoiceNum-2</b>, &hellip;). Invoice col&nbsp;B updated with suffixed numbers. Sheet2 rebuilt as lookup.<br>'
-            '<span class="step-badge">3</span>Download the processed workbook &mdash; check the summary for any flagged rows'
+            '<b>How to use</b><br>'
+            '<span class="step-badge">1</span>Upload your Ancillary Invoice template (.xlsx) &mdash; '
+            'must have <b>Sheet1</b> and <b>Invoice</b> tabs (Sheet2 helper tab is optional &mdash; it will be rebuilt internally then removed from the output)<br>'
+            '<span class="step-badge">2</span>Click <b>Process Invoice</b> to run all checks and transformations automatically<br>'
+            '<span class="step-badge">3</span>Download the processed workbook and review the summary for any flagged rows'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        # ── Validations ─────────────────────────────────────────────────
+        st.markdown(
+            '<div class="warning-box" style="margin-top:8px">'
+            '<b>&#9888;&nbsp; Validation Checks (Sheet1)</b><br><br>'
+            '<b>BOL</b> &nbsp;&mdash;&nbsp; Column M on Total rows &nbsp;|&nbsp; Max: <b>$2.97</b><br>'
+            '&nbsp;&nbsp;&bull;&nbsp; If <b>$5.94</b> found: auto-corrected to $2.97 (forgotten case split)<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Any other value above $2.97: <b>flagged for manual review</b><br><br>'
+            '<b>Case Selection</b> &nbsp;&mdash;&nbsp; Column O &divide; Column J &nbsp;|&nbsp; Max: <b>0.240</b><br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Values above 0.240: <b>flagged for manual review</b><br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Division error (blank J): left blank'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        # ── Transformations ─────────────────────────────────────────────
+        st.markdown(
+            '<div class="success-box" style="margin-top:8px">'
+            '<b>&#10003;&nbsp; Transformations Applied (Invoice tab)</b><br><br>'
+            '<b>STORE column</b> &nbsp;&mdash;&nbsp; Column H &nbsp;|&nbsp; First 3 digits of PO number (Column E) written as plain values<br><br>'
+            '<b>Invoice suffix assignment</b> &nbsp;&mdash;&nbsp; Column B<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Unique stores collected in order of appearance<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Batched in groups of 45: stores 1&ndash;45 &rarr; <b>InvoiceNum&#8209;1</b>, '
+            '46&ndash;90 &rarr; <b>InvoiceNum&#8209;2</b>, and so on<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Column B replaced with suffixed invoice numbers<br>&nbsp;&nbsp;&bull;&nbsp; Helper column H (STORE) and Sheet2 are <b>removed from the final output</b>'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -1036,7 +1091,7 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
     accepted_types = ["xlsx", "xls"] if (is_validated or is_efh or is_fpk_agg or is_halls_agg or is_ancillary_inv) else ["xlsx", "xls", "csv"]
     file_hint = ("Excel (.xlsx) with AP tab (+ optional Details tab)" if is_efh
                  else "Excel (.xlsx) with Detail and AP tabs" if is_validated
-                 else "Ancillary Invoice template (.xlsx) with Sheet1, Invoice, Sheet2 tabs" if is_ancillary_inv
+                 else "Ancillary Invoice template (.xlsx) — must have Sheet1 and Invoice tabs" if is_ancillary_inv
                  else "Upload one or more Excel files (.xlsx)" if (is_fpk_agg or is_halls_agg)
                  else "Excel (.xlsx, .xls) or CSV")
 
