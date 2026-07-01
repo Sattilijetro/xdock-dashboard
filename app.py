@@ -709,9 +709,10 @@ def _halls_read_logistics(f):
                 consolidated[col] = group.iloc[:, 0]
             else:
                 # Pick the sub-column with the highest non-null count.
-                # Guard: if all sub-cols are entirely empty, fall back to first.
-                non_null = group.notna().sum()
-                idx = int(non_null.argmax()) if non_null.sum() > 0 else 0
+                # Use .values to get a numpy array so argmax() returns a
+                # positional integer (0..n-1), not a column label.
+                counts = group.notna().sum().values
+                idx = int(counts.argmax()) if counts.sum() > 0 else 0
                 consolidated[col] = group.iloc[:, idx]
         df = pd.DataFrame(consolidated)
 
