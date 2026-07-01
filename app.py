@@ -53,6 +53,13 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; backgroun
 .stDataFrame { border-radius: 10px; border: 1px solid #2a3a5c; overflow: hidden; }
 #MainMenu, footer, header { visibility: hidden; }
 .block-container { padding: 24px 32px; }
+.mode-toggle-wrap { margin-bottom: 20px; }
+.mode-toggle-wrap div[data-testid="stRadio"] > div { display: flex; gap: 0; background: #1a1f2e; border: 1px solid #2a3a5c; border-radius: 10px; padding: 4px; width: fit-content; }
+.mode-toggle-wrap div[data-testid="stRadio"] label { cursor: pointer; font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 600; padding: 8px 22px; border-radius: 7px; color: #7a8aaa; transition: all 0.15s; margin: 0; }
+.mode-toggle-wrap div[data-testid="stRadio"] label:has(input:checked) { background: #4fc3f7; color: #0f1117; }
+.mode-toggle-wrap div[data-testid="stRadio"] label:hover:not(:has(input:checked)) { background: #232b3e; color: #b0c4de; }
+.mode-toggle-wrap div[data-testid="stRadio"] [data-testid="stMarkdownContainer"] p { margin: 0; line-height: 1; }
+.mode-toggle-wrap div[data-testid="stRadio"] input[type="radio"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -84,10 +91,11 @@ INVOICE_TYPES = {
         {
             "name": "Warehousing", "key": "halls_warehousing", "placeholder": False,
             "sub_types": [
-                {"name": "Ancillary",        "key": "halls_warehousing_ancillary",      "placeholder": False},
-                {"name": "Inbound",          "key": "halls_warehousing_inbound",        "placeholder": False},
-                {"name": "Renewal",          "key": "halls_warehousing_renewal",        "placeholder": False},
-                {"name": "Sort & Selection", "key": "halls_warehousing_sort_selection", "placeholder": False},
+                {"name": "Ancillary",         "key": "halls_warehousing_ancillary",         "placeholder": False},
+                {"name": "Ancillary Invoice", "key": "halls_warehousing_ancillary_invoice",  "placeholder": False},
+                {"name": "Inbound",           "key": "halls_warehousing_inbound",            "placeholder": False},
+                {"name": "Renewal",           "key": "halls_warehousing_renewal",            "placeholder": False},
+                {"name": "Sort & Selection",  "key": "halls_warehousing_sort_selection",     "placeholder": False},
             ],
         },
     ],
@@ -117,6 +125,7 @@ HALLS_AGGREGATE_KEYS       = {
     "halls_warehousing_ancillary", "halls_warehousing_inbound",
     "halls_warehousing_renewal",   "halls_warehousing_sort_selection",
 }
+HALLS_INVOICE_KEYS         = {"halls_warehousing_ancillary_invoice"}
 
 
 # =============================================================================
@@ -773,6 +782,174 @@ def _halls_trucking_fsc_proc(files):
     return buf.getvalue(), "Halls_TruckingFSC_Aggregated.xlsx", "\n".join(errors) if errors else None
 
 
+def process_halls_ancillary_invoice(uploaded_file) -> tuple:
+    """
+    Process the Halls Warehousing Ancillary Invoice template (single .xlsx file).
+
+    Sheet1:
+      - Validate/fix BOL (col M) on Total rows: 5.94 auto-divided to 2.97; >2.97 flagged.
+      - Compute Case Selection (col T) = O/J; >0.240 flagged.
+      - Write computed values into col S (BOL) and col T (Case Selection).
+
+    Invoice tab:
+      - Compute STORE (col H) = first 3 digits of PO (col E), written as values.
+      - Collect unique stores in appearance order.
+      - Get base invoice number from B2.
+      - Assign suffix: stores 1-45 → InvoiceNum-1, 46-90 → InvoiceNum-2, etc.
+      - Rebuild Sheet2 with STORE / Invoice# mapping.
+      - Replace col B with suffixed invoice numbers.
+    """
+    f = uploaded_file[0] if isinstance(uploaded_file, list) else uploaded_file
+    try:
+        raw_bytes = f.read()
+        f.seek(0)
+        wb = load_workbook(io.BytesIO(raw_bytes))
+    except Exception as exc:
+        return None, None, f"Could not open workbook: {exc}"
+
+    # ------------------------------------------------------------------ Sheet1
+    if "Sheet1" not in wb.sheetnames:
+        return None, None, "Expected a 'Sheet1' tab — not found in this file."
+    ws1 = wb["Sheet1"]
+
+    bol_flags  = []  # (row_num, original_value)  — needs manual review
+    cs_flags   = []  # (row_num, computed_value)   — exceeds 0.240
+    bol_fixed  = []  # rows where 5.94 was auto-corrected to 2.97
+
+    # Header rows are 1 and 2; data starts at row 3.
+    # Column index mapping (0-based within row tuple):
+    #   F=5, J=9, M=12, O=14, S=18, T=19
+    for row in ws1.iter_rows(min_row=3, max_row=ws1.max_row):
+        f_cell = row[5]   # PO# / "XXXXX Total"
+        m_cell = row[12]  # BOL Preparation amount
+        o_cell = row[14]  # Case Selection amount
+        j_cell = row[9]   # Cases count
+        s_cell = row[18]  # BOL computed output
+        t_cell = row[19]  # Case Selection computed output
+
+        f_str      = str(f_cell.value).strip() if f_cell.value is not None else ""
+        f_upper    = f_str.upper()
+        # PO-level Total rows look like "70223 Total"; skip "Grand Total" catch-all row
+        is_total   = f_upper.endswith("TOTAL") and f_upper != "GRAND TOTAL"
+
+        # --- BOL: only on PO Total rows ---
+        if is_total and m_cell.value is not None:
+            try:
+                bol     = float(m_cell.value)
+                bol_r   = round(bol, 4)          # eliminate float noise (e.g. 2.9700000000000006)
+                if round(bol, 2) == 5.94:
+                    # Forgot to split into 2 cases — auto-correct to 2.97
+                    m_cell.value = 2.97
+                    s_cell.value = 2.97
+                    bol_fixed.append(f_cell.row)
+                elif bol_r > 2.97:
+                    s_cell.value = bol_r
+                    bol_flags.append((f_cell.row, bol_r))
+                else:
+                    s_cell.value = bol_r
+            except (TypeError, ValueError):
+                s_cell.value = ""
+        elif not is_total:
+            s_cell.value = ""
+
+        # --- Case Selection: all data rows ---
+        try:
+            o_val = float(o_cell.value) if o_cell.value is not None else None
+            j_val = float(j_cell.value) if j_cell.value is not None else None
+            if o_val is not None and j_val and j_val != 0:
+                cs = round(o_val / j_val, 6)
+                t_cell.value = cs
+                if cs > 0.240:
+                    cs_flags.append((f_cell.row, round(cs, 4)))
+            else:
+                t_cell.value = ""
+        except (TypeError, ValueError):
+            t_cell.value = ""
+
+    # ---------------------------------------------------------------- Invoice tab
+    if "Invoice" not in wb.sheetnames:
+        return None, None, "Expected an 'Invoice' tab — not found in this file."
+    wsi = wb["Invoice"]
+
+    # Base invoice number (cell B2, first data row)
+    raw_inv = wsi.cell(2, 2).value
+    try:
+        base_inv = str(int(float(raw_inv)))
+    except (TypeError, ValueError):
+        base_inv = str(raw_inv).strip() if raw_inv else "UNKNOWN"
+
+    # Walk Invoice rows: compute STORE, collect unique stores in appearance order
+    store_list  = []          # ordered unique stores
+    seen_stores = set()
+    row_store   = {}          # row_index → store string
+
+    for r in range(2, wsi.max_row + 1):
+        e_val = wsi.cell(r, 5).value   # PO number
+        if e_val is None:
+            continue
+        try:
+            po_str = str(int(float(e_val)))
+        except (TypeError, ValueError):
+            po_str = str(e_val).strip()
+        store = po_str[:3]
+        wsi.cell(r, 8).value = store   # write STORE as a plain value
+        row_store[r] = store
+        if store not in seen_stores:
+            store_list.append(store)
+            seen_stores.add(store)
+
+    # Assign suffixed invoice numbers (groups of 45 stores)
+    store_to_inv = {}
+    for idx, store in enumerate(store_list):
+        suffix = (idx // 45) + 1
+        store_to_inv[store] = f"{base_inv}-{suffix}"
+
+    # Rebuild Sheet2
+    if "Sheet2" in wb.sheetnames:
+        ws2 = wb["Sheet2"]
+        for r in range(2, ws2.max_row + 1):
+            ws2.cell(r, 1).value = None
+            ws2.cell(r, 2).value = None
+    else:
+        ws2 = wb.create_sheet("Sheet2")
+    ws2.cell(1, 1).value = "STORE"
+    ws2.cell(1, 2).value = "Invoice#"
+    for idx, store in enumerate(store_list):
+        ws2.cell(idx + 2, 1).value = store
+        ws2.cell(idx + 2, 2).value = store_to_inv[store]
+
+    # Replace Invoice col B with suffixed invoice numbers
+    for r, store in row_store.items():
+        wsi.cell(r, 2).value = store_to_inv[store]
+
+    # ---------------------------------------------------------------- Save
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    # Build human-readable summary
+    n_groups = ((len(store_list) - 1) // 45 + 1) if store_list else 0
+    lines = [
+        f"Base invoice: {base_inv}",
+        f"Unique stores: {len(store_list)}  →  {n_groups} invoice group(s)",
+    ]
+    if bol_fixed:
+        lines.append(f"✓ BOL auto-corrected (5.94 → 2.97) on {len(bol_fixed)} row(s): rows {bol_fixed}")
+    if bol_flags:
+        lines.append(
+            f"⚠️ BOL exceeds $2.97 — manual review required: "
+            + ", ".join(f"row {r} = ${v}" for r, v in bol_flags)
+        )
+    if cs_flags:
+        lines.append(
+            f"⚠️ Case Selection exceeds 0.240 — manual review required: "
+            + ", ".join(f"row {r} = {v}" for r, v in cs_flags)
+        )
+    if not bol_flags and not cs_flags:
+        lines.append("✓ All BOL and Case Selection values are within limits")
+
+    return buf.getvalue(), f"Ancillary_Invoice_{base_inv}.xlsx", "\n".join(lines)
+
+
 def process_halls_aggregate(uploaded_files, invoice_type_key: str) -> tuple:
     handlers = {
         "halls_warehousing_ancillary":      _halls_ancillary_proc,
@@ -801,6 +978,9 @@ def route_invoice(uploaded_files, xdock_key: str, invoice_type_key: str) -> tupl
     if invoice_type_key in HALLS_AGGREGATE_KEYS:
         files = uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]
         return process_halls_aggregate(files, invoice_type_key)
+    if invoice_type_key in HALLS_INVOICE_KEYS:
+        f = uploaded_files if not isinstance(uploaded_files, list) else uploaded_files[0]
+        return process_halls_ancillary_invoice(f)
     return None, None, "PLACEHOLDER"
 
 
@@ -1146,36 +1326,21 @@ def render_subtotal_tab():
                         for name, df in zip(names, aligned):
                             row = {"File": name}
                             for col in numeric_cols:
-                                row[col] = round(pd.to_numeric(df[col], errors="coerce").sum(), 2) if col in df.columns else 0.0
+                                if col in df.columns:
+                                    row[col] = pd.to_numeric(df[col], errors="coerce").sum()
+                                else:
+                                    row[col] = 0.0
                             rows.append(row)
-                        summary_df = pd.DataFrame(rows)
-                        grand = {"File": "GRAND TOTAL"}
+                        summary = pd.DataFrame(rows)
+                        grand   = {"File": "GRAND TOTAL"}
                         for col in numeric_cols:
-                            grand[col] = round(summary_df[col].sum(), 2)
-                        display_df = pd.concat([summary_df, pd.DataFrame([grand])], ignore_index=True)
-
-                        buf = io.BytesIO()
-                        ewb = Workbook(); ews = ewb.active; ews.title = "Subtotals"
-                        for ci, h in enumerate(display_df.columns, 1):
-                            cell = ews.cell(row=1, column=ci, value=h)
-                            cell.font = Font(bold=True)
-                            cell.alignment = Alignment(horizontal="center", vertical="center")
-                        grand_fill = PatternFill("solid", fgColor="1a3a2a")
-                        grand_font = Font(bold=True, color="4caf50")
-                        for ri, row in enumerate(display_df.itertuples(index=False), 2):
-                            is_grand = (ri == len(display_df) + 1)
-                            for ci, val in enumerate(row, 1):
-                                cell = ews.cell(row=ri, column=ci, value=val)
-                                cell.alignment = Alignment(horizontal="center", vertical="center")
-                                if is_grand:
-                                    cell.fill = grand_fill; cell.font = grand_font
-                        col_w = [max(len(str(ews.cell(row=r, column=ci).value or "")) for r in range(1, ews.max_row + 1)) for ci in range(1, ews.max_column + 1)]
-                        unif = max(min(max(col_w, default=10) + 2, 30), 12)
-                        for ci in range(1, ews.max_column + 1):
-                            ews.column_dimensions[get_column_letter(ci)].width = unif
-                        ews.auto_filter.ref = f"A1:{get_column_letter(ews.max_column)}{ews.max_row}"
-                        ewb.save(buf)
-                        st.session_state["sub_output"] = (buf.getvalue(), "Subtotal_Summary.xlsx", None)
+                            grand[col] = summary[col].sum()
+                        summary = pd.concat([summary, pd.DataFrame([grand])], ignore_index=True)
+                        st.session_state["sub_output"] = (
+                            _df_to_formatted_excel(summary, "Subtotals"),
+                            "Subtotals_Output.xlsx",
+                            None,
+                        )
                 except Exception as exc:
                     st.session_state["sub_output"] = (None, None, str(exc))
 
@@ -1184,67 +1349,82 @@ def render_subtotal_tab():
             st.markdown(f'<div class="error-box">{out_err}</div>', unsafe_allow_html=True)
         else:
             try:
-                display_df = pd.read_excel(io.BytesIO(out_bytes), sheet_name=0, nrows=50)
+                preview_df = pd.read_excel(io.BytesIO(out_bytes), sheet_name=0, nrows=50)
             except Exception:
-                display_df = pd.DataFrame()
-            num_cols = max(len(display_df.columns) - 1, 0)
-            st.markdown(f'<div class="success-box">Subtotals calculated &mdash; <b>{len(dfs)} files</b>, <b>{num_cols} numeric column(s)</b></div>', unsafe_allow_html=True)
-
-            def _style_grand(row):
-                if row["File"] == "GRAND TOTAL":
-                    return ["background-color:#1a3a2a; color:#4caf50; font-weight:bold"] * len(row)
-                return [""] * len(row)
-
-            st.dataframe(display_df.style.apply(_style_grand, axis=1), use_container_width=True, hide_index=True)
+                preview_df = pd.DataFrame()
+            st.markdown(
+                f'<div class="success-box">Subtotal calculation complete &mdash; '
+                f'<b>{len(names)} file(s)</b> summarised</div>',
+                unsafe_allow_html=True,
+            )
+            with st.expander("\U0001f4cb Subtotal Preview", expanded=True):
+                st.dataframe(preview_df, use_container_width=True, height=300)
             col_a, _, _ = st.columns([1, 1, 2])
             with col_a:
-                st.download_button(label="Download Summary", data=out_bytes, file_name=out_name,
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="sub_download")
+                st.download_button(
+                    label="Download Subtotals",
+                    data=out_bytes,
+                    file_name=out_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="sub_download",
+                )
 
 
 # =============================================================================
-# MAIN -- TAB RENDERING
+# MAIN — MODE TOGGLE + TAB LAYOUT
 # =============================================================================
 
-XDOCK_TAB_LABELS = list(XDOCKS.keys())
-ALL_TAB_LABELS   = XDOCK_TAB_LABELS + ["\U0001f4c1  Aggregator", "\U0001f9ee  Subtotal"]
-tabs = st.tabs(ALL_TAB_LABELS)
+st.markdown('<div class="mode-toggle-wrap">', unsafe_allow_html=True)
+mode = st.radio(
+    "app_mode",
+    ["🧾  Invoice Processing", "📁  File Tools"],
+    horizontal=True,
+    key="app_mode",
+    label_visibility="collapsed",
+)
+st.markdown('</div>', unsafe_allow_html=True)
 
-for tab, (label, cfg) in zip(tabs[:len(XDOCK_TAB_LABELS)], XDOCKS.items()):
-    with tab:
-        xdock_key     = cfg["key"]
-        xdock_display = xdock_key.capitalize()
-        xdock_color   = cfg["color"]
-        inv_type_list = INVOICE_TYPES[xdock_key]
+# ── INVOICE PROCESSING MODE ────────────────────────────────────────────────
+if mode == "🧾  Invoice Processing":
+    xdock_tabs = st.tabs(list(XDOCKS.keys()))
 
-        st.markdown(f"""
-        <div style="margin-bottom:20px">
-            <span style="font-family:\'IBM Plex Mono\',monospace;font-size:18px;font-weight:600;color:{xdock_color}">{label.strip()}</span>
-            <span style="font-size:12px;color:#7a8aaa;margin-left:12px">{cfg["desc"]}</span>
-        </div>
-        """, unsafe_allow_html=True)
+    for tab_idx, (xdock_display, xdock_cfg) in enumerate(XDOCKS.items()):
+        with xdock_tabs[tab_idx]:
+            xdock_key   = xdock_cfg["key"]
+            xdock_color = xdock_cfg["color"]
+            inv_types   = INVOICE_TYPES.get(xdock_key, [])
 
-        type_names = [t["name"] for t in inv_type_list]
-        sel_idx = st.radio("Invoice Type", options=range(len(type_names)),
-                           format_func=lambda i, tn=type_names: tn[i],
-                           horizontal=True, key=f"radio_{xdock_key}", label_visibility="collapsed")
-        selected_type = inv_type_list[sel_idx]
-        st.markdown("<hr style='border:1px solid #2a3a5c;margin:16px 0'>", unsafe_allow_html=True)
+            if not inv_types:
+                st.info("No invoice types configured for this XDock.")
+                continue
 
-        if "sub_types" in selected_type:
-            sub_list  = selected_type["sub_types"]
-            sub_names = [s["name"] for s in sub_list]
-            st.markdown('<div class="sub-type-label">Warehousing Sub-Type</div>', unsafe_allow_html=True)
-            sub_idx = st.radio("Warehousing Sub-Type", options=range(len(sub_names)),
-                               format_func=lambda i, sn=sub_names: sn[i],
-                               horizontal=True, key=f"radio_{xdock_key}_warehousing_sub", label_visibility="collapsed")
-            selected_type = sub_list[sub_idx]
-            st.markdown("<hr style='border:1px solid #2a3a5c;margin:16px 0'>", unsafe_allow_html=True)
+            inv_names = [it["name"] for it in inv_types]
+            sel_name  = st.radio(
+                "Invoice Type",
+                inv_names,
+                horizontal=True,
+                key=f"inv_type_{xdock_key}",
+                label_visibility="collapsed",
+            )
+            sel_cfg = next(it for it in inv_types if it["name"] == sel_name)
 
-        render_invoice_section(xdock_key, selected_type, xdock_color, xdock_display)
+            if "sub_types" in sel_cfg:
+                sub_names    = [s["name"] for s in sel_cfg["sub_types"]]
+                sel_sub_name = st.radio(
+                    "Sub-Type",
+                    sub_names,
+                    horizontal=True,
+                    key=f"sub_type_{xdock_key}",
+                    label_visibility="collapsed",
+                )
+                sel_cfg = next(s for s in sel_cfg["sub_types"] if s["name"] == sel_sub_name)
 
-with tabs[len(XDOCK_TAB_LABELS)]:
-    render_aggregator_tab()
+            render_invoice_section(xdock_key, sel_cfg, xdock_color, xdock_display)
 
-with tabs[len(XDOCK_TAB_LABELS) + 1]:
-    render_subtotal_tab()
+# ── FILE TOOLS MODE ────────────────────────────────────────────────────────
+else:
+    file_tabs = st.tabs(["📁  Aggregator", "🧮  Subtotal"])
+    with file_tabs[0]:
+        render_aggregator_tab()
+    with file_tabs[1]:
+        render_subtotal_tab()
