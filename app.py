@@ -852,42 +852,50 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
 
     # Header rows are 1 and 2; data starts at row 3.
     # Column index mapping (0-based within row tuple):
-    #   F=5, J=9, M=12, O=14
-    # NOTE: Sheet1 is READ-ONLY — no values are written back. Only the Invoice
-    #       tab (col B) is modified.
+    #   F=5, J=9, M=12, O=14, S=18, T=19
+    # NOTE: col M is never modified. Col S (BOL output) and col T (Case Selection
+    #       formula) are written. Only Invoice tab col B is structurally changed.
     for row in ws1.iter_rows(min_row=3, max_row=ws1.max_row):
         f_cell = row[5]   # PO# / "XXXXX Total"
-        m_cell = row[12]  # BOL Preparation amount
+        m_cell = row[12]  # BOL Preparation amount (never modified)
         o_cell = row[14]  # Case Selection amount
         j_cell = row[9]   # Cases count
+        s_cell = row[18]  # BOL output column (written)
+        t_cell = row[19]  # Case Selection output column (written)
 
         f_str      = str(f_cell.value).strip() if f_cell.value is not None else ""
         f_upper    = f_str.upper()
         # PO-level Total rows look like "70223 Total"; skip "Grand Total" catch-all row
         is_total   = f_upper.endswith("TOTAL") and f_upper != "GRAND TOTAL"
 
-        # --- BOL check: only on PO Total rows (read-only, no file edits) ---
+        # --- BOL: write rounded value to col S on Total rows; flag issues ---
         if is_total and m_cell.value is not None:
             try:
                 bol_r = round(float(m_cell.value), 4)
+                s_cell.value = bol_r          # write to col S, col M untouched
                 if round(bol_r, 2) == 5.94:
                     # Possible forgotten case split: 5.94 / 2 = 2.97
                     bol_split.append(f_cell.row)
                 elif bol_r > 2.97:
                     bol_flags.append((f_cell.row, bol_r))
             except (TypeError, ValueError):
-                pass
+                s_cell.value = ""
+        elif not is_total:
+            s_cell.value = ""
 
-        # --- Case Selection check: all data rows (read-only, no file edits) ---
+        # --- Case Selection: write O÷J to col T; flag if >0.240 ---
         try:
             o_val = float(o_cell.value) if o_cell.value is not None else None
             j_val = float(j_cell.value) if j_cell.value is not None else None
             if o_val is not None and j_val and j_val != 0:
                 cs = round(o_val / j_val, 6)
+                t_cell.value = cs
                 if cs > 0.240:
                     cs_flags.append((f_cell.row, round(cs, 4)))
+            else:
+                t_cell.value = ""
         except (TypeError, ValueError):
-            pass
+            t_cell.value = ""
 
     # ---------------------------------------------------------------- Invoice tab
     if "Invoice" not in wb.sheetnames:
