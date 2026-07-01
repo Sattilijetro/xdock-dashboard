@@ -830,6 +830,10 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
       - Replace col B with suffixed invoice numbers.
     """
     f = uploaded_file[0] if isinstance(uploaded_file, list) else uploaded_file
+    # Derive output filename: same as input with " - AP" appended before extension
+    _orig_name = getattr(f, "name", "Ancillary_Invoice.xlsx")
+    _stem, _ext = (_orig_name.rsplit(".", 1) if "." in _orig_name else (_orig_name, "xlsx"))
+    _out_fname = f"{_stem} - AP.{_ext}"
     try:
         raw_bytes = f.read()
         f.seek(0)
@@ -1012,7 +1016,7 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
     if not bol_flags and not cs_flags:
         lines.append("✓ All BOL and Case Selection values are within limits")
 
-    return buf.getvalue(), f"Ancillary_Invoice_{base_inv}.xlsx", "\n".join(lines)
+    return buf.getvalue(), _out_fname, "\n".join(lines)
 
 
 def process_halls_aggregate(uploaded_files, invoice_type_key: str) -> tuple:
