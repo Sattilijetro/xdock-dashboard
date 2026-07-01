@@ -1059,38 +1059,34 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
             '</div>',
             unsafe_allow_html=True,
         )
-        # ── Validations + Transformations side by side ───────────────────
-        _col_v, _col_t = st.columns(2)
-        with _col_v:
-            st.markdown(
-                '<div class="warning-box" style="height:100%;margin-top:8px">'
-                '<b>&#9888;&nbsp; Validation Checks &mdash; Sheet1</b><br><br>'
-                '<b>BOL</b> &nbsp;&mdash;&nbsp; Column M on Total rows<br>'
-                '&nbsp;&nbsp;&bull;&nbsp; Max: <b>$2.97</b><br>'
-                '&nbsp;&nbsp;&bull;&nbsp; If <b>$5.94</b> found: auto-corrected to $2.97 (forgotten case split)<br>'
-                '&nbsp;&nbsp;&bull;&nbsp; Any other value above $2.97: <b>flagged for review</b><br><br>'
-                '<b>Case Selection</b> &nbsp;&mdash;&nbsp; Case Selection Amount &divide; Case<br>'
-                '&nbsp;&nbsp;&bull;&nbsp; Max: <b>0.240</b><br>'
-                '&nbsp;&nbsp;&bull;&nbsp; Values above 0.240: <b>flagged for review</b><br>'
-                '&nbsp;&nbsp;&bull;&nbsp; Division error (blank Cases): left blank'
-                '</div>',
-                unsafe_allow_html=True,
-            )
-        with _col_t:
-            st.markdown(
-                '<div class="success-box" style="height:100%;margin-top:8px">'
-                '<b>&#10003;&nbsp; Transformations Applied &mdash; Invoice tab</b><br><br>'
-                '<b>STORE column</b><br>'
-                '&nbsp;&nbsp;&bull;&nbsp; First 3 digits of PO number written as plain values<br><br>'
-                '<b>Invoice suffix assignment</b> &nbsp;&mdash;&nbsp; Column B<br>'
-                '&nbsp;&nbsp;&bull;&nbsp; Unique stores collected in order of appearance<br>'
-                '&nbsp;&nbsp;&bull;&nbsp; Batched in groups of 45: stores 1&ndash;45 &rarr; <b>InvoiceNum&#8209;1</b>, '
-                '46&ndash;90 &rarr; <b>InvoiceNum&#8209;2</b>, and so on<br>'
-                '&nbsp;&nbsp;&bull;&nbsp; Column B updated with suffixed invoice numbers<br>'
-                '&nbsp;&nbsp;&bull;&nbsp; Helper STORE column and Sheet2 <b>removed from output</b>'
-                '</div>',
-                unsafe_allow_html=True,
-            )
+        # ── Validations + Transformations side by side (pure HTML flexbox) ───
+        st.markdown(
+            '<div style="display:flex;gap:12px;margin-top:8px">'
+            '<div class="warning-box" style="flex:1;margin:0">'
+            '<b>&#9888;&nbsp; Validation Checks &mdash; Sheet1</b><br><br>'
+            '<b>BOL</b> &nbsp;&mdash;&nbsp; Column M on Total rows<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Max: <b>$2.97</b><br>'
+            '&nbsp;&nbsp;&bull;&nbsp; If <b>$5.94</b> found: auto-corrected to $2.97 (forgotten case split)<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Any other value above $2.97: <b>flagged for review</b><br><br>'
+            '<b>Case Selection</b> &nbsp;&mdash;&nbsp; Case Selection Amount &divide; Case<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Max: <b>0.240</b><br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Values above 0.240: <b>flagged for review</b><br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Division error (blank Cases): left blank'
+            '</div>'
+            '<div class="success-box" style="flex:1;margin:0">'
+            '<b>&#10003;&nbsp; Transformations Applied &mdash; Invoice tab</b><br><br>'
+            '<b>STORE column</b><br>'
+            '&nbsp;&nbsp;&bull;&nbsp; First 3 digits of PO number written as plain values<br><br>'
+            '<b>Invoice suffix assignment</b> &nbsp;&mdash;&nbsp; Column B<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Unique stores collected in order of appearance<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Batched in groups of 45: stores 1&ndash;45 &rarr; <b>InvoiceNum&#8209;1</b>, '
+            '46&ndash;90 &rarr; <b>InvoiceNum&#8209;2</b>, and so on<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Column B updated with suffixed invoice numbers<br>'
+            '&nbsp;&nbsp;&bull;&nbsp; Helper STORE column and Sheet2 <b>removed from output</b>'
+            '</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
     else:
         st.markdown(f'<div class="info-box"><b>How to use:</b><br><span class="step-badge">1</span>Upload your {xdock_display} &mdash; {inv_name} invoice file (Excel or CSV)<br><span class="step-badge">2</span>Review the raw data preview<br><span class="step-badge">3</span>Click <b>Process Invoice</b> to run the automation<br><span class="step-badge">4</span>Download the output file</div>', unsafe_allow_html=True)
 
