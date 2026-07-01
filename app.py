@@ -938,6 +938,11 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
     for r, store in row_store.items():
         wsi.cell(r, 2).value = store_to_inv[store]
 
+    # ---------------------------------------------------------------- Rename Invoice tab headers
+    # Columns C and D both come through as "Invoice" — rename to descriptive labels
+    wsi.cell(1, 3).value = "Invoice Date"
+    wsi.cell(1, 4).value = "Due Date"
+
     # ---------------------------------------------------------------- Cleanup helpers
     # Remove STORE helper column (col H) from Invoice tab — no longer needed
     wsi.delete_cols(8)
