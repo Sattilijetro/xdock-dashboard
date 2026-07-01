@@ -125,7 +125,10 @@ HALLS_AGGREGATE_KEYS       = {
     "halls_warehousing_ancillary", "halls_warehousing_inbound",
     "halls_warehousing_renewal",   "halls_warehousing_sort_selection",
 }
-HALLS_INVOICE_KEYS         = {"halls_warehousing_ancillary_invoice"}
+HALLS_INVOICE_KEYS         = {"halls_warehousing_ancillary_invoice", "freezpak_ancillary_invoice"}
+FREEZPAK_INVOICE_PROC_TYPES = [
+    {"name": "Ancillary", "key": "freezpak_ancillary_invoice", "placeholder": False},
+]  # Add more Freezpak invoice types here as they are implemented
 
 
 # =============================================================================
@@ -1371,29 +1374,61 @@ def render_subtotal_tab():
 
 
 # =============================================================================
-# MAIN — MODE TOGGLE + TAB LAYOUT
+# MAIN — TAB LAYOUT
 # =============================================================================
 
-st.markdown('<div class="mode-toggle-wrap">', unsafe_allow_html=True)
-mode = st.radio(
-    "app_mode",
-    ["🧾  Invoice Processing", "📁  File Tools"],
-    horizontal=True,
-    key="app_mode",
-    label_visibility="collapsed",
-)
-st.markdown('</div>', unsafe_allow_html=True)
+ALL_TABS = list(XDOCKS.keys()) + ["📁  Aggregator", "🧮  Subtotal"]
+tabs = st.tabs(ALL_TABS)
 
-# ── INVOICE PROCESSING MODE ────────────────────────────────────────────────
-if mode == "🧾  Invoice Processing":
-    xdock_tabs = st.tabs(list(XDOCKS.keys()))
+for tab_idx, (xdock_display, xdock_cfg) in enumerate(XDOCKS.items()):
+    with tabs[tab_idx]:
+        xdock_key   = xdock_cfg["key"]
+        xdock_color = xdock_cfg["color"]
 
-    for tab_idx, (xdock_display, xdock_cfg) in enumerate(XDOCKS.items()):
-        with xdock_tabs[tab_idx]:
-            xdock_key   = xdock_cfg["key"]
-            xdock_color = xdock_cfg["color"]
-            inv_types   = INVOICE_TYPES.get(xdock_key, [])
+        # ── Freezpak: inner Aggregator / Invoice Processing toggle ──────
+        if xdock_key == "freezpak":
+            st.markdown('<div class="mode-toggle-wrap">', unsafe_allow_html=True)
+            fpk_mode = st.radio(
+                "fpk_mode",
+                ["📊  Aggregator", "🧾  Invoice Processing"],
+                horizontal=True,
+                key="fpk_mode",
+                label_visibility="collapsed",
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
 
+            if fpk_mode == "📊  Aggregator":
+                inv_types = INVOICE_TYPES.get("freezpak", [])
+                inv_names = [it["name"] for it in inv_types]
+                sel_name  = st.radio(
+                    "Invoice Type",
+                    inv_names,
+                    horizontal=True,
+                    key="inv_type_freezpak",
+                    label_visibility="collapsed",
+                )
+                sel_cfg = next(it for it in inv_types if it["name"] == sel_name)
+                render_invoice_section(xdock_key, sel_cfg, xdock_color, xdock_display)
+
+            else:  # Invoice Processing
+                proc_types = FREEZPAK_INVOICE_PROC_TYPES
+                if len(proc_types) > 1:
+                    proc_names   = [it["name"] for it in proc_types]
+                    sel_proc     = st.radio(
+                        "Invoice Type",
+                        proc_names,
+                        horizontal=True,
+                        key="inv_proc_type_freezpak",
+                        label_visibility="collapsed",
+                    )
+                    sel_cfg = next(it for it in proc_types if it["name"] == sel_proc)
+                else:
+                    sel_cfg = proc_types[0]
+                render_invoice_section(xdock_key, sel_cfg, xdock_color, xdock_display)
+
+        # ── All other XDock tabs ─────────────────────────────────────────
+        else:
+            inv_types = INVOICE_TYPES.get(xdock_key, [])
             if not inv_types:
                 st.info("No invoice types configured for this XDock.")
                 continue
@@ -1421,10 +1456,8 @@ if mode == "🧾  Invoice Processing":
 
             render_invoice_section(xdock_key, sel_cfg, xdock_color, xdock_display)
 
-# ── FILE TOOLS MODE ────────────────────────────────────────────────────────
-else:
-    file_tabs = st.tabs(["📁  Aggregator", "🧮  Subtotal"])
-    with file_tabs[0]:
-        render_aggregator_tab()
-    with file_tabs[1]:
-        render_subtotal_tab()
+with tabs[len(XDOCKS)]:
+    render_aggregator_tab()
+
+with tabs[len(XDOCKS) + 1]:
+    render_subtotal_tab()
