@@ -997,9 +997,10 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
     is_ph        = invoice_type_cfg["placeholder"]
     is_validated = (inv_key in VALIDATED_INVOICE_KEYS)
     is_efh       = (inv_key in EFH_INVOICE_KEYS)
-    is_fpk_agg   = (inv_key in FREEZPAK_AGGREGATE_KEYS)
-    is_halls_agg = (inv_key in HALLS_AGGREGATE_KEYS)
-    is_multi     = is_fpk_agg or is_halls_agg
+    is_fpk_agg        = (inv_key in FREEZPAK_AGGREGATE_KEYS)
+    is_halls_agg      = (inv_key in HALLS_AGGREGATE_KEYS)
+    is_ancillary_inv  = (inv_key in HALLS_INVOICE_KEYS)
+    is_multi          = is_fpk_agg or is_halls_agg
 
     if is_ph:
         st.markdown('<div class="placeholder-box"><b>Logic not configured yet.</b> Upload and processing workflow will be added later. You can still upload a file to preview its contents.</div>', unsafe_allow_html=True)
@@ -1009,12 +1010,33 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
         st.markdown(f'<div class="info-box"><b>How to use:</b><br><span class="step-badge">1</span>Upload your {xdock_display} &mdash; {inv_name} workbook (.xlsx) &mdash; must have <b>Detail</b> and <b>AP</b> tabs<br><span class="step-badge">2</span>Review the raw data preview<br><span class="step-badge">3</span>Click <b>Process Invoice</b> &mdash; rate check runs automatically (max $0.475/lb)<br><span class="step-badge">4</span>Download the <b>AP-only output</b>, or the <b>Exception Report</b> if rates fail</div>', unsafe_allow_html=True)
     elif is_efh:
         st.markdown(f'<div class="info-box"><b>How to use:</b><br><span class="step-badge">1</span>Upload your {inv_name} invoice workbook (.xlsx) &mdash; should have an <b>AP</b> tab and optionally a <b>Details</b> tab<br><span class="step-badge">2</span>Review the raw data preview<br><span class="step-badge">3</span>Click <b>Process Invoice</b> &mdash; PO numbers normalised, freight totals validated<br><span class="step-badge">4</span>Download the formatted <b>AP-only output</b>, or the <b>Exception Report</b> if totals do not match</div>', unsafe_allow_html=True)
+    elif is_ancillary_inv:
+        st.markdown(
+            '<div class="info-box">'
+            '<b>How to use:</b><br>'
+            '<span class="step-badge">1</span>Upload your Ancillary Invoice template (.xlsx) &mdash; must have <b>Sheet1</b>, <b>Invoice</b>, and <b>Sheet2</b> tabs<br>'
+            '<span class="step-badge">2</span>Click <b>Process Invoice</b> &mdash; the following checks run automatically:<br>'
+            '<span class="step-badge" style="background:#ff9800">&#10003;</span>'
+            '<b>BOL</b> (Sheet1 col&nbsp;M on Total rows) &mdash; max <b>$2.97</b>. '
+            'If <b>$5.94</b> detected, auto-corrected to $2.97 (split by 2). Any other value above $2.97 is flagged for review.<br>'
+            '<span class="step-badge" style="background:#ff9800">&#10003;</span>'
+            '<b>Case Selection</b> (Sheet1 col&nbsp;O &divide; col&nbsp;J) &mdash; max <b>0.240</b>. Values above 0.240 are flagged for review. Errors left blank.<br>'
+            '<span class="step-badge" style="background:#4caf50">&#10003;</span>'
+            '<b>STORE column</b> (Invoice tab col&nbsp;H) &mdash; first 3 digits of PO number extracted and written as values.<br>'
+            '<span class="step-badge" style="background:#4caf50">&#10003;</span>'
+            '<b>Invoice suffix</b> &mdash; unique stores grouped in batches of 45 and assigned suffixes '
+            '(<b>InvoiceNum-1</b>, <b>InvoiceNum-2</b>, &hellip;). Invoice col&nbsp;B updated with suffixed numbers. Sheet2 rebuilt as lookup.<br>'
+            '<span class="step-badge">3</span>Download the processed workbook &mdash; check the summary for any flagged rows'
+            '</div>',
+            unsafe_allow_html=True,
+        )
     else:
         st.markdown(f'<div class="info-box"><b>How to use:</b><br><span class="step-badge">1</span>Upload your {xdock_display} &mdash; {inv_name} invoice file (Excel or CSV)<br><span class="step-badge">2</span>Review the raw data preview<br><span class="step-badge">3</span>Click <b>Process Invoice</b> to run the automation<br><span class="step-badge">4</span>Download the output file</div>', unsafe_allow_html=True)
 
-    accepted_types = ["xlsx", "xls"] if (is_validated or is_efh or is_fpk_agg or is_halls_agg) else ["xlsx", "xls", "csv"]
+    accepted_types = ["xlsx", "xls"] if (is_validated or is_efh or is_fpk_agg or is_halls_agg or is_ancillary_inv) else ["xlsx", "xls", "csv"]
     file_hint = ("Excel (.xlsx) with AP tab (+ optional Details tab)" if is_efh
                  else "Excel (.xlsx) with Detail and AP tabs" if is_validated
+                 else "Ancillary Invoice template (.xlsx) with Sheet1, Invoice, Sheet2 tabs" if is_ancillary_inv
                  else "Upload one or more Excel files (.xlsx)" if (is_fpk_agg or is_halls_agg)
                  else "Excel (.xlsx, .xls) or CSV")
 
