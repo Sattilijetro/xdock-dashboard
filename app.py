@@ -947,14 +947,26 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
         wb.remove(wb["Sheet2"])
 
     # ---------------------------------------------------------------- Format output sheets
-    # Preserve original template styling — only add AutoFilter, freeze panes,
-    # and auto-fit column widths (no header colour/font overrides).
+    # Preserve original template header styling.
+    # Add: numeric coercion, center alignment, auto-fit widths, AutoFilter, freeze panes.
     for _sn in wb.sheetnames:
         _ws = wb[_sn]
         _lc = _ws.max_column
         _lr = _ws.max_row
+        _hdr_row = 1  # row containing column headers (used for freeze/filter)
+        # Numeric coercion + center alignment on data rows
+        for _ri in range(2, _lr + 1):
+            for _ci in range(1, _lc + 1):
+                _cell = _ws.cell(row=_ri, column=_ci)
+                _coerced = _coerce_numeric(_cell.value)
+                if _coerced is not None:
+                    _cell.value = _coerced
+                _cell.alignment = _CTR
+        # Center-align header row too (keep existing fill/font)
+        for _ci in range(1, _lc + 1):
+            _ws.cell(row=_hdr_row, column=_ci).alignment = _CTR
+        # Auto-fit column widths (scan up to 200 rows)
         scan_to = min(_lr, 200)
-        # Auto-fit column widths
         for _ci in range(1, _lc + 1):
             _col_letter = get_column_letter(_ci)
             _max_len = max(
@@ -962,7 +974,7 @@ def process_halls_ancillary_invoice(uploaded_file) -> tuple:
                 default=8,
             )
             _ws.column_dimensions[_col_letter].width = min(max(_max_len + 2, 8), 40)
-        # AutoFilter on header row
+        # AutoFilter + freeze panes
         if _sn == "Sheet1":
             _ws.auto_filter.ref = f"A1:{get_column_letter(_lc)}1"
             _ws.freeze_panes = "A3"   # Sheet1 has 2 header rows
