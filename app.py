@@ -653,14 +653,45 @@ def _write_single_sheet_excel(df, sheet_name="Aggregated"):
 
 
 def _halls_read_logistics(f):
-    """Read a Halls LOGISTICS data file: drop Unnamed columns, blank rows, and last (totals) row."""
+    """Read a Halls LOGISTICS data file.
+
+    Handles merged-cell headers: e.g. 'Description' merged across 2 cols means
+    pandas names them 'Description' + 'Unnamed:X', but the actual data lands in
+    the Unnamed column. Fix: forward-fill column names, then consolidate
+    duplicate-named columns by taking the first non-null value per row.
+    Also drops all-blank rows and the last totals row.
+    """
     try:
         df = pd.read_excel(f, sheet_name=0, dtype=str)
         f.seek(0)
-        df = df.loc[:, ~df.columns.str.contains('^Unnamed', na=False)]
-        df = df.dropna(how='all').reset_index(drop=True)   # remove blank rows
+
+        # 1. Forward-fill Unnamed column names from the previous named column
+        cols = list(df.columns)
+        for i in range(1, len(cols)):
+            if str(cols[i]).startswith("Unnamed"):
+                cols[i] = cols[i - 1]
+        df.columns = cols
+
+        # 2. Consolidate duplicate column names (take first non-null per row)
+        unique_cols = list(dict.fromkeys(cols))   # preserve order, deduplicate
+        consolidated = {}
+        for col in unique_cols:
+            group = df.loc[:, [c == col for c in df.columns]]
+            if group.shape[1] > 1:
+                # bfill across the group then take the first column
+                consolidated[col] = group.bfill(axis=1).iloc[:, 0]
+            else:
+                consolidated[col] = group.iloc[:, 0]
+        df = pd.DataFrame(consolidated)
+
+        # 3. Drop columns whose name looks like a bare integer (Excel artefact)
+        df = df.loc[:, ~df.columns.astype(str).str.match(r'^\d+$')]
+
+        # 4. Drop all-blank rows and last totals row
+        df = df.dropna(how="all").reset_index(drop=True)
         if len(df) > 0:
-            df = df.iloc[:-1]                               # remove last totals row
+            df = df.iloc[:-1]
+
         return df, ""
     except Exception as exc:
         return None, str(exc)
