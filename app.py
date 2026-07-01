@@ -1048,43 +1048,49 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
     elif is_efh:
         st.markdown(f'<div class="info-box"><b>How to use:</b><br><span class="step-badge">1</span>Upload your {inv_name} invoice workbook (.xlsx) &mdash; should have an <b>AP</b> tab and optionally a <b>Details</b> tab<br><span class="step-badge">2</span>Review the raw data preview<br><span class="step-badge">3</span>Click <b>Process Invoice</b> &mdash; PO numbers normalised, freight totals validated<br><span class="step-badge">4</span>Download the formatted <b>AP-only output</b>, or the <b>Exception Report</b> if totals do not match</div>', unsafe_allow_html=True)
     elif is_ancillary_inv:
-        # ── How to use ──────────────────────────────────────────────────
+        # ── How to use (full width) ──────────────────────────────────────
         st.markdown(
             '<div class="info-box">'
             '<b>How to use</b><br>'
             '<span class="step-badge">1</span>Upload your Ancillary Invoice template (.xlsx) &mdash; '
-            'must have <b>Sheet1</b> and <b>Invoice</b> tabs (Sheet2 helper tab is optional &mdash; it will be rebuilt internally then removed from the output)<br>'
+            'must have <b>Sheet1</b> and <b>Invoice</b> tabs<br>'
             '<span class="step-badge">2</span>Click <b>Process Invoice</b> to run all checks and transformations automatically<br>'
             '<span class="step-badge">3</span>Download the processed workbook and review the summary for any flagged rows'
             '</div>',
             unsafe_allow_html=True,
         )
-        # ── Validations ─────────────────────────────────────────────────
-        st.markdown(
-            '<div class="warning-box" style="margin-top:8px">'
-            '<b>&#9888;&nbsp; Validation Checks (Sheet1)</b><br><br>'
-            '<b>BOL</b> &nbsp;&mdash;&nbsp; Column M on Total rows &nbsp;|&nbsp; Max: <b>$2.97</b><br>'
-            '&nbsp;&nbsp;&bull;&nbsp; If <b>$5.94</b> found: auto-corrected to $2.97 (forgotten case split)<br>'
-            '&nbsp;&nbsp;&bull;&nbsp; Any other value above $2.97: <b>flagged for manual review</b><br><br>'
-            '<b>Case Selection</b> &nbsp;&mdash;&nbsp; Column O &divide; Column J &nbsp;|&nbsp; Max: <b>0.240</b><br>'
-            '&nbsp;&nbsp;&bull;&nbsp; Values above 0.240: <b>flagged for manual review</b><br>'
-            '&nbsp;&nbsp;&bull;&nbsp; Division error (blank J): left blank'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        # ── Transformations ─────────────────────────────────────────────
-        st.markdown(
-            '<div class="success-box" style="margin-top:8px">'
-            '<b>&#10003;&nbsp; Transformations Applied (Invoice tab)</b><br><br>'
-            '<b>STORE column</b> &nbsp;&mdash;&nbsp; Column H &nbsp;|&nbsp; First 3 digits of PO number (Column E) written as plain values<br><br>'
-            '<b>Invoice suffix assignment</b> &nbsp;&mdash;&nbsp; Column B<br>'
-            '&nbsp;&nbsp;&bull;&nbsp; Unique stores collected in order of appearance<br>'
-            '&nbsp;&nbsp;&bull;&nbsp; Batched in groups of 45: stores 1&ndash;45 &rarr; <b>InvoiceNum&#8209;1</b>, '
-            '46&ndash;90 &rarr; <b>InvoiceNum&#8209;2</b>, and so on<br>'
-            '&nbsp;&nbsp;&bull;&nbsp; Column B replaced with suffixed invoice numbers<br>&nbsp;&nbsp;&bull;&nbsp; Helper column H (STORE) and Sheet2 are <b>removed from the final output</b>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        # ── Validations + Transformations side by side ───────────────────
+        _col_v, _col_t = st.columns(2)
+        with _col_v:
+            st.markdown(
+                '<div class="warning-box" style="height:100%;margin-top:8px">'
+                '<b>&#9888;&nbsp; Validation Checks &mdash; Sheet1</b><br><br>'
+                '<b>BOL</b> &nbsp;&mdash;&nbsp; Column M on Total rows<br>'
+                '&nbsp;&nbsp;&bull;&nbsp; Max: <b>$2.97</b><br>'
+                '&nbsp;&nbsp;&bull;&nbsp; If <b>$5.94</b> found: auto-corrected to $2.97 (forgotten case split)<br>'
+                '&nbsp;&nbsp;&bull;&nbsp; Any other value above $2.97: <b>flagged for review</b><br><br>'
+                '<b>Case Selection</b> &nbsp;&mdash;&nbsp; Case Selection Amount &divide; Case<br>'
+                '&nbsp;&nbsp;&bull;&nbsp; Max: <b>0.240</b><br>'
+                '&nbsp;&nbsp;&bull;&nbsp; Values above 0.240: <b>flagged for review</b><br>'
+                '&nbsp;&nbsp;&bull;&nbsp; Division error (blank Cases): left blank'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        with _col_t:
+            st.markdown(
+                '<div class="success-box" style="height:100%;margin-top:8px">'
+                '<b>&#10003;&nbsp; Transformations Applied &mdash; Invoice tab</b><br><br>'
+                '<b>STORE column</b><br>'
+                '&nbsp;&nbsp;&bull;&nbsp; First 3 digits of PO number written as plain values<br><br>'
+                '<b>Invoice suffix assignment</b> &nbsp;&mdash;&nbsp; Column B<br>'
+                '&nbsp;&nbsp;&bull;&nbsp; Unique stores collected in order of appearance<br>'
+                '&nbsp;&nbsp;&bull;&nbsp; Batched in groups of 45: stores 1&ndash;45 &rarr; <b>InvoiceNum&#8209;1</b>, '
+                '46&ndash;90 &rarr; <b>InvoiceNum&#8209;2</b>, and so on<br>'
+                '&nbsp;&nbsp;&bull;&nbsp; Column B updated with suffixed invoice numbers<br>'
+                '&nbsp;&nbsp;&bull;&nbsp; Helper STORE column and Sheet2 <b>removed from output</b>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
     else:
         st.markdown(f'<div class="info-box"><b>How to use:</b><br><span class="step-badge">1</span>Upload your {xdock_display} &mdash; {inv_name} invoice file (Excel or CSV)<br><span class="step-badge">2</span>Review the raw data preview<br><span class="step-badge">3</span>Click <b>Process Invoice</b> to run the automation<br><span class="step-badge">4</span>Download the output file</div>', unsafe_allow_html=True)
 
