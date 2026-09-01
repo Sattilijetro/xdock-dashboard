@@ -1228,6 +1228,7 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
     file_hint = ("Excel (.xlsx) with AP tab (+ optional Details tab)" if is_efh
                  else "Excel (.xlsx) with Detail and AP tabs" if is_validated
                  else "Ancillary Invoice template (.xlsx) — must have Sheet1 and Invoice tabs" if is_ancillary_inv
+                 else "Upload one or more CSV files (.csv)" if is_reg_download
                  else "Upload one or more Excel files (.xlsx)" if (is_fpk_agg or is_halls_agg)
                  else "Excel (.xlsx, .xls) or CSV")
 
@@ -1243,15 +1244,24 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
     uploaded_list = uploaded if isinstance(uploaded, list) else ([uploaded] if uploaded else [])
     if uploaded_list:
         uploaded = uploaded_list  # always a list from here
+        raw_df = None
         try:
             # Read only 100 rows for preview to keep memory low
-            raw_df = (pd.read_csv(uploaded[0], nrows=100) if uploaded[0].name.endswith(".csv")
-                      else pd.read_excel(uploaded[0], sheet_name=0, nrows=100))
+            if uploaded[0].name.lower().endswith(".csv"):
+                try:
+                    raw_df = pd.read_csv(uploaded[0], encoding="latin1", nrows=100)
+                except Exception:
+                    uploaded[0].seek(0)
+                    raw_df = pd.read_csv(uploaded[0], encoding="utf-8", nrows=100)
+            else:
+                raw_df = pd.read_excel(uploaded[0], sheet_name=0, nrows=100)
             uploaded[0].seek(0)
         except Exception as exc:
             st.markdown(f'<div class="warning-box">Could not preview file: {exc}</div>', unsafe_allow_html=True)
-            return
+            raw_df = pd.DataFrame()   # allow processing to continue
 
+        if raw_df is None:
+            raw_df = pd.DataFrame()
         sheet_label = "Detail tab rows" if is_validated else "AP tab rows" if is_efh else "Rows (file 1)" if (is_fpk_agg or is_halls_agg) else "Total Rows"
 
         freight_total_html = ""
