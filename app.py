@@ -653,73 +653,48 @@ def _write_single_sheet_excel(df, sheet_name="Aggregated"):
 
 
 def _halls_read_logistics(f):
-    """Read a Halls LOGISTICS data file, correctly handling merged-cell headers.
+    """Read a Halls LOGISTICS data file, handling merged-cell headers.
 
-    Strategy:
-      1. Use openpyxl to read the actual merge regions in row 1 and assign
-         each column the correct header label (no guessing from forward-fill).
-      2. For duplicate-named columns (sub-columns of a merge), keep the one
-         with the most non-null data values — that's where the template puts
-         actual numbers.
-      3. Drop all-blank rows and the last totals row.
+    Excel merged headers leave the first cell named and subsequent cells as
+    Unnamed:X in pandas, but the actual row data can land in any sub-cell.
+    Fix: for each Unnamed column, if the most-recent named column has no data,
+    move the Unnamed column's data into it, then drop all Unnamed columns.
     """
     try:
-        raw = f.read(); f.seek(0)
+        df = pd.read_excel(f, sheet_name=0, dtype=str)
+        f.seek(0)
 
-        # --- Step 1: resolve headers via openpyxl merge metadata ---
-        from openpyxl import load_workbook as _opxl_lw
-        _wb = _opxl_lw(io.BytesIO(raw), data_only=True)
-        _ws = _wb.active
-        max_col = _ws.max_column
-
-        # Build a 1-indexed header list from row-1 cell values
-        hdr = [None] * (max_col + 1)
-        for cell in _ws[1]:
-            if cell.value is not None:
-                hdr[cell.column] = str(cell.value).strip()
-
-        # Expand every merged region in row 1 with its top-left label
-        for merge in _ws.merged_cells.ranges:
-            if merge.min_row == 1:
-                label = _ws.cell(merge.min_row, merge.min_col).value
-                if label is not None:
-                    label = str(label).strip()
-                    for c in range(merge.min_col, merge.max_col + 1):
-                        hdr[c] = label
-
-        header = hdr[1:]   # convert to 0-indexed list
-
-        # --- Step 2: read data rows (skip header row 1) ---
-        df_raw = pd.read_excel(io.BytesIO(raw), sheet_name=0,
-                               header=None, skiprows=1, dtype=str)
-
-        ncols = min(len(header), df_raw.shape[1])
-        df_raw = df_raw.iloc[:, :ncols].copy()
-        df_raw.columns = header[:ncols]
-
-        # Drop columns with no label
-        df_raw = df_raw.loc[:, [h is not None for h in df_raw.columns]]
-
-        # --- Step 3: for duplicate column names pick sub-col with most data ---
-        unique_cols = list(dict.fromkeys(df_raw.columns))
-        consolidated = {}
-        for col in unique_cols:
-            group = df_raw.loc[:, [c == col for c in df_raw.columns]]
-            if group.shape[1] == 1:
-                consolidated[col] = group.iloc[:, 0]
-            else:
-                # Pick the sub-column with the highest non-null count.
-                # Use .values to get a numpy array so argmax() returns a
-                # positional integer (0..n-1), not a column label.
-                counts = group.notna().sum().values
-                idx = int(counts.argmax()) if counts.sum() > 0 else 0
-                consolidated[col] = group.iloc[:, idx]
-        df = pd.DataFrame(consolidated)
-
-        # --- Step 4: drop all-blank rows and last totals row ---
+        # Drop completely blank rows first so data checks are meaningful
         df = df.dropna(how="all").reset_index(drop=True)
+
+        cols = list(df.columns)
+        last_named_idx = None   # positional index of most-recent named column
+
+        for i, col_name in enumerate(cols):
+            if not str(col_name).startswith("Unnamed"):
+                last_named_idx = i
+            else:
+                if last_named_idx is None:
+                    continue
+                unnamed_series = df.iloc[:, i]
+                unnamed_has_data = unnamed_series.notna().any()
+                if not unnamed_has_data:
+                    continue
+                named_series = df.iloc[:, last_named_idx]
+                named_has_data = named_series.notna().any()
+                if not named_has_data:
+                    # Merge: move Unnamed data into the named column slot
+                    df.iloc[:, last_named_idx] = unnamed_series
+
+        # Drop all Unnamed columns (data already moved to named slots above)
+        df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
+
+        # Drop bare-integer column names (Excel artefacts like "1", "2")
+        df = df.loc[:, ~df.columns.astype(str).str.match(r"^\d+$")]
+
+        # Drop last row (totals row)
         if len(df) > 0:
-            df = df.iloc[:-1]
+            df = df.iloc[:-1].reset_index(drop=True)
 
         return df, ""
     except Exception as exc:
