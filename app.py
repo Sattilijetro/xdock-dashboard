@@ -812,15 +812,32 @@ def process_ibt_invoice(uploaded_file):
             ("Amount Due",     amount_due),
         ]
 
-        col_label_w, col_value_w, row_h = 160, 220, 20
-        x_start, y_start = 72, 80
+        # Exact measurements extracted from reference PDF (Aug_26_WK2.pdf)
+        # Carlito is metrically equivalent to Calibri (the original font)
+        _CARLITO_R = "/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf"
+        _CARLITO_B = "/usr/share/fonts/truetype/crosextra/Carlito-Bold.ttf"
+        _LIBSANS_R = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+        _LIBSANS_B = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+        import os as _os
+        if _os.path.exists(_CARLITO_R):
+            pdf.add_font("_TF", "",  _CARLITO_R)
+            pdf.add_font("_TF", "B", _CARLITO_B)
+        else:
+            pdf.add_font("_TF", "",  _LIBSANS_R)
+            pdf.add_font("_TF", "B", _LIBSANS_B)
+        pdf.c_margin = 2          # 2pt left padding inside cells (matches reference)
+        _TX     = 108.5           # table left x
+        _TY     = 54.5            # table top y (FPDF from top = 792 - 737.5)
+        _LW     = 196.8           # label col width  (305.3 - 108.5)
+        _VW     = 197.5           # value col width  (502.8 - 305.3)
+        _RH     = 135.4 / 7      # row height (total table height / 7 rows ≈ 19.34pt)
         for i, (label, value) in enumerate(rows_data):
-            y = y_start + i * row_h
-            pdf.set_font("Helvetica", "B", 10)
-            pdf.set_xy(x_start, y)
-            pdf.cell(col_label_w, row_h, label, border=1)
-            pdf.set_font("Helvetica", "", 10)
-            pdf.cell(col_value_w, row_h, value, border=1)
+            y = _TY + i * _RH
+            pdf.set_font("_TF", "B", 11)
+            pdf.set_xy(_TX, y)
+            pdf.cell(_LW, _RH, label, border=1)
+            pdf.set_font("_TF", "", 11)
+            pdf.cell(_VW, _RH, value, border=1)
 
         page_bytes = pdf.output()
         reader = _PDFReader(io.BytesIO(bytes(page_bytes)))
