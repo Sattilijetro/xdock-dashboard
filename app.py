@@ -812,13 +812,15 @@ def process_ibt_invoice(uploaded_file):
             ("Amount Due",     amount_due),
         ]
 
-        y_start, row_h, col_label = 100, 24, 150
+        col_label_w, col_value_w, row_h = 160, 220, 20
+        x_start, y_start = 72, 80
         for i, (label, value) in enumerate(rows_data):
             y = y_start + i * row_h
-            pdf.set_font("Helvetica", "B", 11)
-            pdf.set_xy(72, y); pdf.cell(col_label, row_h, label)
-            pdf.set_font("Helvetica", "", 11)
-            pdf.set_xy(72 + col_label, y); pdf.cell(300, row_h, value)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.set_xy(x_start, y)
+            pdf.cell(col_label_w, row_h, label, border=1)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.cell(col_value_w, row_h, value, border=1)
 
         page_bytes = pdf.output()
         reader = _PDFReader(io.BytesIO(bytes(page_bytes)))
