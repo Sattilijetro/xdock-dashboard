@@ -93,7 +93,7 @@ XDOCKS = {
 
 INVOICE_TYPES = {
     "halls": [
-        {"name": "IBT",            "key": "halls_ibt",          "placeholder": True},
+        {"name": "IBT",            "key": "halls_ibt",          "placeholder": False},
         {"name": "Trucking & FSC", "key": "halls_trucking_fsc",  "placeholder": False},
         {
             "name": "Warehousing", "key": "halls_warehousing", "placeholder": False,
@@ -752,6 +752,88 @@ def _halls_simple_aggregate(uploaded_files):
     return dfs, ap_info, errors
 
 
+def process_ibt_invoice(uploaded_file):
+    """Generate a combined PDF invoice from a Halls IBT Excel file.
+    One page per unique Load ID; pages merged into a single PDF download.
+    """
+    from fpdf import FPDF
+    from pypdf import PdfWriter, PdfReader as _PDFReader
+
+    f = uploaded_file[0] if isinstance(uploaded_file, list) else uploaded_file
+    try:
+        raw = f.read(); f.seek(0)
+        df = pd.read_excel(io.BytesIO(raw), engine="openpyxl")
+    except Exception as exc:
+        return None, None, f"Could not read file: {exc}"
+
+    # Zero-pad Load ID to 11 digits
+    df["Load ID"] = df["Load ID"].astype(str).str.zfill(11)
+
+    # Aggregate by Load ID
+    try:
+        df = df.groupby(["Load ID"], as_index=False).agg({
+            "Carrier Account #":   "first",
+            "Carrier Name":        "first",
+            "Total Cost of Truck": "mean",
+            "PO Number":           "first",
+            "Entry Date":          "first",
+            "INVOICE NUMBER":      "first",
+            "INVOICE DATE":        "first",
+            "DUE DATE":            "first",
+        })
+    except KeyError as exc:
+        return None, None, f"Missing expected column: {exc}"
+
+    # Sequential suffix per load (numeric chars only)
+    numeric_loads = df["Load ID"].str.extract(r"(\d+)")[0]
+    load_map = {load: idx + 1 for idx, load in enumerate(numeric_loads.drop_duplicates())}
+
+    writer = PdfWriter()
+
+    for _, row in df.iterrows():
+        load_id        = "".join(c for c in str(row["Load ID"]) if c.isnumeric())
+        invoice_number = f"{row['INVOICE NUMBER']}-{load_map[load_id]}"
+        vendor_number  = str(int(row["Carrier Account #"])) if pd.notna(row["Carrier Account #"]) else ""
+        amount_due     = f"${row['Total Cost of Truck']:,.2f}"
+        inv_date       = pd.to_datetime(row["INVOICE DATE"]).strftime("%m/%d/%Y")
+        due_date_str   = pd.to_datetime(row["DUE DATE"]).strftime("%m/%d/%Y")
+
+        pdf = FPDF(orientation="P", unit="pt", format="Letter")
+        pdf.add_page()
+        pdf.set_margins(72, 72, 72)
+
+        rows_data = [
+            ("Vendor Number",  vendor_number),
+            ("Payable To",     "AMERICOLD"),
+            ("Invoice Number", invoice_number),
+            ("Load Number",    load_id),
+            ("Invoice Date",   inv_date),
+            ("Due Date",       due_date_str),
+            ("Amount Due",     amount_due),
+        ]
+
+        y_start, row_h, col_label = 100, 24, 150
+        for i, (label, value) in enumerate(rows_data):
+            y = y_start + i * row_h
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_xy(72, y); pdf.cell(col_label, row_h, label)
+            pdf.set_font("Helvetica", "", 11)
+            pdf.set_xy(72 + col_label, y); pdf.cell(300, row_h, value)
+
+        page_bytes = pdf.output()
+        reader = _PDFReader(io.BytesIO(bytes(page_bytes)))
+        writer.add_page(reader.pages[0])
+
+    buf = io.BytesIO()
+    writer.write(buf)
+    n = len(df)
+    # Derive output filename from input
+    orig_name = getattr(f, "name", "IBT_Invoice.xlsx")
+    stem = orig_name.rsplit(".", 1)[0] if "." in orig_name else orig_name
+    out_fname = f"{stem}_Invoice.pdf"
+    return buf.getvalue(), out_fname, f"Generated {n} invoice page(s)."
+
+
 def _halls_ancillary_proc(files):
     dfs, ap_info, errors = _halls_simple_aggregate(files)
     if not dfs:
@@ -1139,6 +1221,9 @@ def process_halls_aggregate(uploaded_files, invoice_type_key: str) -> tuple:
 
 def route_invoice(uploaded_files, xdock_key: str, invoice_type_key: str) -> tuple:
     # uploaded_files may be a single UploadedFile or a list
+    if invoice_type_key == "halls_ibt":
+        f = uploaded_files if not isinstance(uploaded_files, list) else uploaded_files
+        return process_ibt_invoice(f)
     if invoice_type_key in VALIDATED_INVOICE_KEYS:
         f = uploaded_files if not isinstance(uploaded_files, list) else uploaded_files[0]
         return process_validated_invoice(f)
@@ -1330,7 +1415,7 @@ def render_invoice_section(xdock_key, invoice_type_cfg, xdock_color, xdock_displ
                             label="Download Output",
                             data=output_bytes,
                             file_name=output_filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            mime="application/pdf" if output_filename and output_filename.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"download_{inv_key}",
                         )
     else:
