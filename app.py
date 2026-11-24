@@ -18,6 +18,11 @@ try:
     FREEZPAK_ENABLED = True
 except ImportError:
     FREEZPAK_ENABLED = False
+try:
+    from loads_archive_report import read_export as archive_read_export, build_report as archive_build_report
+    ARCHIVE_ENABLED = True
+except ImportError:
+    ARCHIVE_ENABLED = False
 
 st.set_page_config(
     page_title="Invoice Automation Dashboard",
@@ -1701,10 +1706,96 @@ def render_subtotal_tab():
 
 
 # =============================================================================
+# LOADS TO ARCHIVE TAB (Ascend export -> HTML action report)
+# =============================================================================
+
+def render_archive_tab():
+    st.markdown("""
+    <div style="margin-bottom:20px">
+        <span style="font-family:\'IBM Plex Mono\',monospace;font-size:18px;font-weight:600;color:#ffb74d">\U0001f5c2\ufe0f  Loads to Archive</span>
+        <span style="font-size:12px;color:#7a8aaa;margin-left:12px">Delivered loads not yet archived in Ascend &mdash; these are missing from the Savings report</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not ARCHIVE_ENABLED:
+        st.markdown('<div class="warning-box"><b>loads_archive_report.py not detected.</b> Place it next to app.py and restart.</div>', unsafe_allow_html=True)
+        return
+
+    st.markdown("""
+    <div class="info-box"><b>How to use:</b><br>
+    <span class="step-badge">1</span>Export loads from Ascend and upload the file here (.csv or .xlsx)<br>
+    <span class="step-badge">2</span>Only loads with <b>Load Status = Delivered</b> are kept &mdash; every other status is excluded<br>
+    <span class="step-badge">3</span>Review the counts by Load Planner (the "Load Planner:" text is removed, only the name is kept)<br>
+    <span class="step-badge">4</span>Download the <b>HTML report</b> and send it to the Load Planners so they archive their loads
+    </div>
+    """, unsafe_allow_html=True)
+
+    uploaded = st.file_uploader(
+        "Upload Ascend loads export",
+        type=["csv", "xlsx", "xls"],
+        key="archive_uploader",
+        label_visibility="collapsed",
+    )
+    if not uploaded:
+        st.markdown("""
+        <div style="text-align:center;padding:48px 0;color:#3a4a6a;border:1.5px dashed #2a3a5c;border-radius:12px;margin-top:12px;">
+            <div style="font-size:40px;margin-bottom:12px">&#x2191;</div>
+            <div style="font-family:\'IBM Plex Mono\',monospace;font-size:14px">Drop the Ascend loads export here</div>
+            <div style="font-size:12px;margin-top:6px">CSV or Excel</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    try:
+        raw = archive_read_export(uploaded, uploaded.name)
+        html_text, d, g = archive_build_report(raw, uploaded.name)
+    except Exception as exc:
+        st.markdown(f'<div class="error-box"><b>Could not build the report:</b> {exc}</div>', unsafe_allow_html=True)
+        return
+
+    people = g[~g["IsBot"]]
+    over7  = int((d["Days"] > 7).sum())
+    st.markdown(f"""
+    <div class="metric-row">
+        <div class="metric-card"><div class="metric-value">{len(d):,}</div><div class="metric-label">Delivered Loads to Archive</div></div>
+        <div class="metric-card"><div class="metric-value">{len(people)}</div><div class="metric-label">Load Planners</div></div>
+        <div class="metric-card"><div class="metric-value">{int(g[g["IsBot"]]["Loads"].sum()):,}</div><div class="metric-label">Bot / Unassigned Loads</div></div>
+        <div class="metric-card"><div class="metric-value">{over7:,}</div><div class="metric-label">Delivered &gt; 7 Days Ago</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    summary = g.reset_index()[["Load Planner", "Loads", "Oldest", "Newest", "MaxDays", "IsBot"]].rename(columns={
+        "Loads": "Loads to Archive", "Oldest": "Oldest Delivery", "Newest": "Newest Delivery",
+        "MaxDays": "Oldest Age (days)", "IsBot": "Bot / Unassigned"})
+    with st.expander("\U0001f4cb Loads to Archive by Load Planner", expanded=True):
+        st.dataframe(summary, use_container_width=True, hide_index=True,
+                     column_config={"Oldest Delivery": st.column_config.DateColumn(format="MM/DD/YYYY"),
+                                    "Newest Delivery": st.column_config.DateColumn(format="MM/DD/YYYY")})
+
+    col_a, _, _ = st.columns([1, 1, 2])
+    with col_a:
+        st.download_button(
+            label="Download HTML Report",
+            data=html_text.encode("utf-8"),
+            file_name=f"Loads_To_Archive_{datetime.now():%Y%m%d}.html",
+            mime="text/html",
+            key="archive_download",
+        )
+
+    with st.expander("\U0001f441\ufe0f Preview HTML report", expanded=False):
+        # Report content is HTML-escaped by loads_archive_report, so embedding it is safe.
+        if hasattr(st, "iframe"):          # newer Streamlit
+            st.iframe(html_text, height=900)
+        else:                              # older Streamlit
+            import streamlit.components.v1 as components
+            components.html(html_text, height=900, scrolling=True)
+
+
+# =============================================================================
 # MAIN — TAB LAYOUT
 # =============================================================================
 
-ALL_TABS = list(XDOCKS.keys()) + ["📁  Aggregator", "🧮  Subtotal"]
+ALL_TABS = list(XDOCKS.keys()) + ["📁  Aggregator", "🧮  Subtotal", "🗂️  Loads to Archive"]
 tabs = st.tabs(ALL_TABS)
 
 for tab_idx, (xdock_display, xdock_cfg) in enumerate(XDOCKS.items()):
@@ -1788,3 +1879,6 @@ with tabs[len(XDOCKS)]:
 
 with tabs[len(XDOCKS) + 1]:
     render_subtotal_tab()
+
+with tabs[len(XDOCKS) + 2]:
+    render_archive_tab()
