@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
+DEFAULT_MIN_DAYS = 7  # only report loads delivered at least this many days ago (e.g. run 11/24 -> up to 11/17)
 BOT_PATTERN = re.compile(r"^ECBOT", re.I)  # automated planners (no person to ask)
 
 
@@ -64,11 +65,18 @@ def only_delivered(df):
     return d
 
 
-def prepare(df, as_of):
+def cutoff_date(as_of, min_days=DEFAULT_MIN_DAYS):
+    """Latest delivery date included in the report: today minus min_days (inclusive)."""
+    return pd.Timestamp(as_of.date()) - pd.Timedelta(days=min_days)
+
+
+def prepare(df, as_of, min_days=DEFAULT_MIN_DAYS):
     d = only_delivered(df)
     d["Load Planner"] = d["Users & Roles"].map(extract_load_planner)
     d["Delivery Date"] = to_date(d["Last Drop Date"])
     d["Days"] = (pd.Timestamp(as_of.date()) - d["Delivery Date"]).dt.days
+    # Only loads delivered on or before the cutoff (past one week). Loads with no delivery date are excluded.
+    d = d[d["Delivery Date"].notna() & (d["Delivery Date"] <= cutoff_date(as_of, min_days))].copy()
     d["Carrier"] = d["Carrier"].astype(str).str.replace(r"\s*-\s*\[\d+\]$", "", regex=True)
     d["Load ID"] = d["Load ID"].astype(str).str.replace(r"\.0$", "", regex=True)
     d = d.sort_values(["Load Planner", "Delivery Date"])
@@ -81,7 +89,7 @@ def summarize(d):
         Oldest=("Delivery Date", "min"),
         Newest=("Delivery Date", "max"),
         MaxDays=("Days", "max"),
-        Over7=("Days", lambda s: int((s > 7).sum())),
+        Over14=("Days", lambda s: int((s > 14).sum())),
     )
     g["IsBot"] = [bool(BOT_PATTERN.match(p)) or p == "Unassigned" for p in g.index]
     # people first (most loads first), then bots / unassigned
@@ -102,7 +110,7 @@ def fdate(x):
 def age_cls(days):
     if pd.isna(days):
         return ""
-    return "a3" if days > 14 else "a2" if days > 7 else "a1"
+    return "a3" if days > 14 else "a2"
 
 
 def ndays(x):
@@ -110,18 +118,18 @@ def ndays(x):
 
 
 # ---------- HTML ----------
-def build_html(d, g, source_name, as_of):
+def build_html(d, g, source_name, as_of, min_days=DEFAULT_MIN_DAYS):
     n = len(d)
     people = g[~g["IsBot"]]
     bots = g[g["IsBot"]]
-    over7 = int((d["Days"] > 7).sum())
+    cutoff = cutoff_date(as_of, min_days)
     over14 = int((d["Days"] > 14).sum())
     oldest = d["Delivery Date"].min()
 
     kpis = [
-        ("Loads to Archive", f"{n:,}", "Delivered, not yet archived"),
+        ("Loads to Archive", f"{n:,}", f"Delivered on or before {fdate(cutoff)}"),
         ("Load Planners", f"{len(people):,}", f"+ {len(bots)} bot / unassigned groups"),
-        ("Delivered > 7 Days Ago", f"{over7:,}", f"{over14:,} are over 14 days"),
+        ("Delivered > 14 Days Ago", f"{over14:,}", "highest priority"),
         ("Oldest Delivery", fdate(oldest), f"{ndays(d['Days'].max())} days ago"),
     ]
     kpi_html = "".join(
@@ -136,7 +144,7 @@ def build_html(d, g, source_name, as_of):
                 f'<tr><td><a href="#{r.Anchor}">{esc(p)}</a></td><td class=n><b>{int(r.Loads)}</b></td>'
                 f"<td class=n>{fdate(r.Oldest)}</td><td class=n>{fdate(r.Newest)}</td>"
                 f'<td class="n"><span class="pill {age_cls(r.MaxDays)}">{ndays(r.MaxDays)} days</span></td>'
-                f"<td class=n>{int(r.Over7)}</td>"
+                f"<td class=n>{int(r.Over14)}</td>"
                 f'<td class=n><input type="checkbox" class="done" aria-label="Archived"></td></tr>'
             )
         return out
@@ -147,7 +155,7 @@ def build_html(d, g, source_name, as_of):
         summary += summary_rows(bots)
     summary += (
         f'<tr class="tot"><td>Total</td><td class=n>{n}</td><td class=n>{fdate(oldest)}</td>'
-        f'<td class=n>{fdate(d["Delivery Date"].max())}</td><td></td><td class=n>{over7}</td><td></td></tr>'
+        f'<td class=n>{fdate(d["Delivery Date"].max())}</td><td></td><td class=n>{over14}</td><td></td></tr>'
     )
 
     cards = ""
@@ -215,7 +223,7 @@ tr.isdone td{{opacity:.45;text-decoration:line-through}}
 @media print{{.tools,.copy,.done{{display:none}} body{{background:#fff}} .pcard{{break-inside:avoid}}}}
 </style></head><body>
 <header><h1>Action Needed: Archive Delivered Loads in Ascend</h1>
-<p>As of {as_of.strftime("%m/%d/%Y")} · Source: {esc(source_name)} · Load Status: Delivered only · {n} loads still unarchived</p></header>
+<p>As of {as_of.strftime("%m/%d/%Y")} · Source: {esc(source_name)} · Load Status: Delivered only · Delivered on or before {fdate(cutoff)} ({min_days}+ days ago) · {n} loads still unarchived</p></header>
 <main>
 <div class="ask"><h2>Why this matters</h2>
 Loads that are <b>Delivered but not archived</b> in Ascend are <b>left out of the Savings report</b>.
@@ -229,9 +237,9 @@ Until they are archived, the savings from these {n} loads won't be counted.
 <section class="card"><h2>Loads to Archive by Load Planner</h2>
 <p class="hint">Click a name to jump to that planner's Load IDs. Tick the box as each planner confirms they're done.</p>
 <table id="sum"><thead><tr><th>Load Planner</th><th class=n>Loads to Archive</th><th class=n>Oldest Delivery</th><th class=n>Newest Delivery</th>
-<th class=n>Oldest Age</th><th class=n>Delivered &gt; 7 Days</th><th class=n>Done</th></tr></thead>
+<th class=n>Oldest Age</th><th class=n>Delivered &gt; 14 Days</th><th class=n>Done</th></tr></thead>
 <tbody>{summary}</tbody></table>
-<p class="legend">Days since delivery:<span class="pill a1">0–7</span><span class="pill a2">8–14</span><span class="pill a3">15+</span></p>
+<p class="legend">Days since delivery:<span class="pill a2">{min_days}–14</span><span class="pill a3">15+</span></p>
 </section>
 
 <section class="card"><h2>Load IDs by Load Planner</h2>
@@ -259,25 +267,28 @@ document.getElementById('q').addEventListener('input',e=>{{const t=e.target.valu
 </script></body></html>"""
 
 
-def build_report(raw_df, source_name, as_of=None):
+def build_report(raw_df, source_name, as_of=None, min_days=DEFAULT_MIN_DAYS):
     """Main entry point (used by the XDock dashboard): raw export -> (html, delivered_df, planner_summary)."""
     as_of = as_of or datetime.now()
-    d = prepare(raw_df, as_of)
+    d = prepare(raw_df, as_of, min_days)
     if d.empty:
-        raise ValueError("No loads with Load Status = Delivered were found in this file.")
+        raise ValueError(f"No Delivered loads with a delivery date on or before "
+                         f"{fdate(cutoff_date(as_of, min_days))} were found in this file.")
     g = summarize(d)
-    return build_html(d, g, source_name, as_of), d, g
+    return build_html(d, g, source_name, as_of, min_days), d, g
 
 
 def main():
     ap = argparse.ArgumentParser(description="Build an HTML action report of Delivered loads to archive in Ascend.")
     ap.add_argument("export", help="Path to the Ascend loads export (.csv or .xlsx)")
+    ap.add_argument("--min-days", type=int, default=DEFAULT_MIN_DAYS,
+                    help="Only include loads delivered at least this many days ago (default 7)")
     ap.add_argument("-o", "--output", help="Output HTML path (default: Loads_To_Archive.html next to the export)")
     args = ap.parse_args()
 
     src = Path(args.export)
     out = Path(args.output) if args.output else src.with_name("Loads_To_Archive.html")
-    html_text, d, g = build_report(read_export(src), src.name)
+    html_text, d, g = build_report(read_export(src), src.name, min_days=args.min_days)
     out.write_text(html_text, encoding="utf-8")
     print(f"Delivered loads to archive: {len(d)}  ->  {out.resolve()}")
     for p, r in g.iterrows():
