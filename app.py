@@ -19,10 +19,11 @@ try:
 except ImportError:
     FREEZPAK_ENABLED = False
 try:
-    from loads_archive_report import read_export as archive_read_export, build_report as archive_build_report, cutoff_date as archive_cutoff_date
-    ARCHIVE_ENABLED = True
-except ImportError:
-    ARCHIVE_ENABLED = False
+    import importlib
+    import loads_archive_report as _archive_mod
+    ARCHIVE_ENABLED, ARCHIVE_IMPORT_ERROR = True, ""
+except Exception as _exc:  # show the real reason in the tab instead of failing silently
+    ARCHIVE_ENABLED, ARCHIVE_IMPORT_ERROR = False, f"{type(_exc).__name__}: {_exc}"
 
 st.set_page_config(
     page_title="Invoice Automation Dashboard",
@@ -1718,8 +1719,17 @@ def render_archive_tab():
     """, unsafe_allow_html=True)
 
     if not ARCHIVE_ENABLED:
-        st.markdown('<div class="warning-box"><b>loads_archive_report.py not detected.</b> Place it next to app.py and restart.</div>', unsafe_allow_html=True)
+        import html as _html
+        st.markdown(
+            '<div class="warning-box"><b>Could not load loads_archive_report.py.</b> '
+            'Make sure it is in the same folder as app.py, then restart / reboot the app.<br>'
+            f'<span style="font-family:monospace;font-size:12px">{_html.escape(ARCHIVE_IMPORT_ERROR)}</span></div>',
+            unsafe_allow_html=True)
         return
+
+    # Always use the latest version of the report module (avoids a stale copy after an update/redeploy)
+    mod = importlib.reload(_archive_mod)
+    archive_read_export, archive_build_report, archive_cutoff_date = mod.read_export, mod.build_report, mod.cutoff_date
 
     st.markdown("""
     <div class="info-box"><b>How to use:</b><br>
