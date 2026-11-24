@@ -19,7 +19,7 @@ try:
 except ImportError:
     FREEZPAK_ENABLED = False
 try:
-    from loads_archive_report import read_export as archive_read_export, build_report as archive_build_report
+    from loads_archive_report import read_export as archive_read_export, build_report as archive_build_report, cutoff_date as archive_cutoff_date
     ARCHIVE_ENABLED = True
 except ImportError:
     ARCHIVE_ENABLED = False
@@ -1724,7 +1724,7 @@ def render_archive_tab():
     st.markdown("""
     <div class="info-box"><b>How to use:</b><br>
     <span class="step-badge">1</span>Export loads from Ascend and upload the file here (.csv or .xlsx)<br>
-    <span class="step-badge">2</span>Only loads with <b>Load Status = Delivered</b> are kept &mdash; every other status is excluded<br>
+    <span class="step-badge">2</span>Only loads with <b>Load Status = Delivered</b> that were delivered <b>at least a week ago</b> are kept &mdash; everything else is excluded<br>
     <span class="step-badge">3</span>Review the counts by Load Planner (the "Load Planner:" text is removed, only the name is kept)<br>
     <span class="step-badge">4</span>Download the <b>HTML report</b> and send it to the Load Planners so they archive their loads
     </div>
@@ -1746,21 +1746,28 @@ def render_archive_tab():
         """, unsafe_allow_html=True)
         return
 
+    min_days = st.number_input(
+        "Only include loads delivered at least this many days ago",
+        min_value=0, max_value=90, value=7, step=1, key="archive_min_days",
+    )
+    cutoff = archive_cutoff_date(datetime.now(), int(min_days))
+    st.markdown(f'<div class="info-box">Including Delivered loads with a delivery date on or before <b>{cutoff:%m/%d/%Y}</b>.</div>', unsafe_allow_html=True)
+
     try:
         raw = archive_read_export(uploaded, uploaded.name)
-        html_text, d, g = archive_build_report(raw, uploaded.name)
+        html_text, d, g = archive_build_report(raw, uploaded.name, min_days=int(min_days))
     except Exception as exc:
         st.markdown(f'<div class="error-box"><b>Could not build the report:</b> {exc}</div>', unsafe_allow_html=True)
         return
 
     people = g[~g["IsBot"]]
-    over7  = int((d["Days"] > 7).sum())
+    over14 = int((d["Days"] > 14).sum())
     st.markdown(f"""
     <div class="metric-row">
         <div class="metric-card"><div class="metric-value">{len(d):,}</div><div class="metric-label">Delivered Loads to Archive</div></div>
         <div class="metric-card"><div class="metric-value">{len(people)}</div><div class="metric-label">Load Planners</div></div>
         <div class="metric-card"><div class="metric-value">{int(g[g["IsBot"]]["Loads"].sum()):,}</div><div class="metric-label">Bot / Unassigned Loads</div></div>
-        <div class="metric-card"><div class="metric-value">{over7:,}</div><div class="metric-label">Delivered &gt; 7 Days Ago</div></div>
+        <div class="metric-card"><div class="metric-value">{over14:,}</div><div class="metric-label">Delivered &gt; 14 Days Ago</div></div>
     </div>
     """, unsafe_allow_html=True)
 
